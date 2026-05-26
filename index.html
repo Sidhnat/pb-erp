@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Perfect Bathware ERP</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  [x-cloak]{display:none}
+  .tab-active{border-bottom:2px solid #2563eb;color:#2563eb}
+</style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+<!-- ── LOGIN ─────────────────────────────────────────────────────────────── -->
+<div id="login-screen" class="min-h-screen flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-lg p-8 w-full max-w-sm">
+    <div class="text-center mb-6">
+      <h1 class="text-2xl font-bold text-blue-700">Perfect Bathware</h1>
+      <p class="text-sm text-gray-400 mt-1">ERP v4</p>
+    </div>
+    <div class="space-y-3">
+      <input id="login-mobile" type="tel" placeholder="Mobile Number"
+             class="w-full border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+             onkeydown="if(event.key==='Enter')document.getElementById('login-password').focus()">
+      <input id="login-password" type="password" placeholder="Password"
+             class="w-full border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+             onkeydown="if(event.key==='Enter')doLogin()">
+      <button onclick="doLogin()"
+              class="w-full bg-blue-600 text-white rounded-xl py-3 text-sm font-semibold hover:bg-blue-700 active:bg-blue-800 transition">
+        Login
+      </button>
+      <p id="login-error" class="text-red-500 text-sm text-center hidden"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ── APP SHELL ──────────────────────────────────────────────────────────── -->
+<div id="app-shell" class="hidden min-h-screen flex flex-col">
+
+  <!-- Nav -->
+  <nav id="nav-bar" class="bg-blue-700 text-white shadow-md sticky top-0 z-30"></nav>
+
+  <!-- Content -->
+  <main id="view-container" class="flex-1 p-4 overflow-auto max-w-full"></main>
+
+  <!-- Toasts -->
+  <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+</div>
+
+<!-- ── MODAL ──────────────────────────────────────────────────────────────── -->
+<div id="modal-overlay"
+     class="hidden fixed inset-0 bg-black/50 z-40 flex items-end sm:items-center justify-center"
+     onclick="if(event.target===this)closeModal()">
+  <div id="modal-box"
+       class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-2xl p-6 max-h-[90vh] overflow-y-auto"></div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+//  CONFIG — replace these two values after creating your project
+// ════════════════════════════════════════════════════════════
+const SUPABASE_URL      = 'https://zcmyxledfeexuyqzmsxp.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbXl4bGVkZmVleHV5cXptc3hwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NzY1NjUsImV4cCI6MjA5NTM1MjU2NX0.T8I1ot-SOdx0wYaA1oJJhdh8PJ4YETAB2OUtn7jR1t8';
+const FY_START          = '2026-04-01';
+
+// ════════════════════════════════════════════════════════════
+//  SUPABASE CLIENTS
+// ════════════════════════════════════════════════════════════
+const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let _adminSb = null; // service-role client, set via Settings
+
+function initAdminSb() {
+  const key = localStorage.getItem('pb_srk');
+  if (key && SUPABASE_URL !== '__SUPABASE_URL__') {
+    _adminSb = supabase.createClient(SUPABASE_URL, key, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════════
+let APP = { parties: [], txns: [], openings: [], profiles: [] };
+let ME  = null;
+let currentView   = null;
+let currentParams = {};
+
+// ════════════════════════════════════════════════════════════
+//  AUTH
+// ════════════════════════════════════════════════════════════
+function mobileToEmail(mobile) {
+  return mobile.replace(/\D/g,'') + '@pb.erp';
+}
+
+async function doLogin() {
+  const mobile   = document.getElementById('login-mobile').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!mobile || !password) { setLoginError('Enter mobile and password'); return; }
+
+  const { data, error } = await _sb.auth.signInWithPassword({ email: mobileToEmail(mobile), password });
+  if (error) { setLoginError(error.message); return; }
+  await afterLogin(data.user);
+}
+
+async function afterLogin(user) {
+  const { data: profile, error } = await _sb.from('profiles').select('*').eq('id', user.id).single();
+  if (error || !profile) { setLoginError('Profile not found. Ask admin.'); await _sb.auth.signOut(); return; }
+  ME = profile;
+  toast('Welcome, ' + ME.name);
+  await loadAppData();
+  showApp();
+}
+
+async function doLogout() {
+  await _sb.auth.signOut();
+  ME  = null;
+  APP = { parties: [], txns: [], openings: [], profiles: [] };
+  document.getElementById('login-mobile').value    = '';
+  document.getElementById('login-password').value = '';
+  showLogin();
+}
+
+function setLoginError(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+// ════════════════════════════════════════════════════════════
+//  DATA
+// ════════════════════════════════════════════════════════════
+async function loadAppData() {
+  const baseQ = [
+    _sb.from('parties').select('*').order('name'),
+    _sb.from('transactions').select('*').gte('date', FY_START).order('date'),
+    _sb.from('opening_balances').select('*'),
+  ];
+  if (ME.role === 'admin') baseQ.push(_sb.from('profiles').select('*').order('name'));
+
+  const [pRes, tRes, oRes, prRes] = await Promise.all(baseQ);
+  APP.parties  = pRes.data  || [];
+  APP.txns     = tRes.data  || [];
+  APP.openings = oRes.data  || [];
+  APP.profiles = prRes?.data || [];
+}
+
+function patchCache(table, row, op = 'upsert') {
+  const arr = APP[table];
+  if (!arr) return;
+  if (op === 'insert') {
+    arr.push(row);
+  } else if (op === 'upsert') {
+    const i = arr.findIndex(r => r.id === row.id);
+    if (i >= 0) arr[i] = { ...arr[i], ...row }; else arr.push(row);
+  } else if (op === 'delete') {
+    const i = arr.findIndex(r => r.id === row.id);
+    if (i >= 0) arr.splice(i, 1);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  CALCULATIONS
+// ════════════════════════════════════════════════════════════
+function daysDiff(from, to) {
+  return Math.floor((from - to) / 86400000);
+}
+
+function calcAging(partyId) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const ob = APP.openings.find(o => o.party_id === partyId && o.as_on_date === FY_START)
+          || { amt_0_30:0, amt_31_60:0, amt_61_90:0, amt_90_plus:0 };
+  let b = { b0:+ob.amt_0_30, b31:+ob.amt_31_60, b61:+ob.amt_61_90, b90:+ob.amt_90_plus };
+
+  APP.txns
+    .filter(t => t.party_id === partyId)
+    .sort((a,c) => new Date(a.date) - new Date(c.date))
+    .forEach(t => {
+      const age = daysDiff(today, new Date(t.date));
+      if (t.type === 'bill') {
+        if      (age <= 30) b.b0  += +t.amount;
+        else if (age <= 60) b.b31 += +t.amount;
+        else if (age <= 90) b.b61 += +t.amount;
+        else                b.b90 += +t.amount;
+      } else {
+        let rem = +t.amount;
+        for (const k of ['b90','b61','b31','b0']) {
+          const d = Math.min(b[k], rem); b[k] -= d; rem -= d;
+          if (rem <= 0) break;
+        }
+      }
+    });
+
+  b.total = b.b0 + b.b31 + b.b61 + b.b90;
+  return b;
+}
+
+function getOutstanding(partyId) { return calcAging(partyId).total; }
+
+function getLastDate(partyId, type) {
+  const arr = APP.txns.filter(t => t.party_id === partyId && t.type === type);
+  return arr.length ? arr.reduce((a,c) => a.date > c.date ? a : c).date : null;
+}
+
+function getLedger(partyId) {
+  const ob = APP.openings.find(o => o.party_id === partyId && o.as_on_date === FY_START);
+  let bal = ob ? +ob.total : 0;
+  const rows = [{ date: FY_START, label:'Opening Balance', debit: bal, credit:0, balance: bal, type:'opening' }];
+  APP.txns
+    .filter(t => t.party_id === partyId)
+    .sort((a,c) => new Date(a.date) - new Date(c.date))
+    .forEach(t => {
+      if (t.type === 'bill')    { bal += +t.amount; rows.push({ ...t, label:'Bill',    debit:+t.amount, credit:0,        balance:bal }); }
+      else                      { bal -= +t.amount; rows.push({ ...t, label:'Payment', debit:0,         credit:+t.amount, balance:bal }); }
+    });
+  return rows;
+}
+
+// ════════════════════════════════════════════════════════════
+//  FORMATTING
+// ════════════════════════════════════════════════════════════
+const _fmt = new Intl.NumberFormat('en-IN', { maximumFractionDigits:0 });
+function rupees(n) { return '₹' + _fmt.format(Math.round(+n || 0)); }
+function fmtDate(d) {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString('en-IN',{ day:'2-digit', month:'short', year:'2-digit' });
+}
+function today() { return new Date().toISOString().split('T')[0]; }
+function firstOfMonth() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+}
+function modeBadge(mode) {
+  const map = { cash:'bg-green-100 text-green-800', cheque:'bg-blue-100 text-blue-800', upi:'bg-purple-100 text-purple-800' };
+  return `<span class="px-2 py-0.5 rounded text-xs font-medium ${map[mode]||'bg-gray-100 text-gray-600'}">${mode||'na'}</span>`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  ROUTING
+// ════════════════════════════════════════════════════════════
+const VIEWS = {};
+function reg(name, fn) { VIEWS[name] = fn; }
+
+function navigate(name, params = {}) {
+  currentView   = name;
+  currentParams = params;
+  const fn = VIEWS[name];
+  const vc = document.getElementById('view-container');
+  if (!fn) { vc.innerHTML = `<p class="text-red-500">View not found: ${name}</p>`; return; }
+  vc.innerHTML = fn(params);
+  renderNav();
+  window.scrollTo(0, 0);
+  if (name === 'verify') setTimeout(renderVerifyRows, 20);
+}
+
+// ════════════════════════════════════════════════════════════
+//  NAV
+// ════════════════════════════════════════════════════════════
+function renderNav() {
+  const isAdmin = ME?.role === 'admin';
+  const links = isAdmin ? [
+    { n:'dashboard', l:'Dashboard' },
+    { n:'bills',     l:'Bills' },
+    { n:'verify',    l:'Verify' },
+    { n:'parties',   l:'Parties' },
+    { n:'users',     l:'Users' },
+    { n:'import',    l:'Import' },
+    { n:'settings',  l:'Settings' },
+  ] : [
+    { n:'partyList', l:'My Parties' },
+  ];
+  const unv = isAdmin ? APP.txns.filter(t => t.type==='payment' && !t.verified).length : 0;
+
+  document.getElementById('nav-bar').innerHTML = `
+    <div class="flex items-center justify-between px-3 py-2 flex-wrap gap-1">
+      <span class="font-bold text-base tracking-tight">PB&nbsp;ERP</span>
+      <div class="flex flex-wrap gap-1 items-center">
+        ${links.map(({n,l}) => `
+          <button onclick="navigate('${n}')"
+            class="px-2.5 py-1 rounded text-xs font-medium transition
+                   ${currentView===n ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-600'}">
+            ${l}${n==='verify'&&unv>0 ? `<span class="ml-1 bg-red-500 text-white text-[10px] rounded-full px-1">${unv}</span>` : ''}
+          </button>`).join('')}
+        <span class="text-blue-300 text-xs hidden sm:inline">| ${ME?.name}</span>
+        <button onclick="doLogout()" class="px-2.5 py-1 rounded text-xs text-blue-200 hover:bg-blue-600">Logout</button>
+      </div>
+    </div>`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  TOAST
+// ════════════════════════════════════════════════════════════
+function toast(msg, type='ok') {
+  const el = document.createElement('div');
+  const bg = type==='error' ? 'bg-red-600' : type==='warn' ? 'bg-yellow-500' : 'bg-green-600';
+  el.className = `${bg} text-white text-sm px-4 py-2 rounded-lg shadow-lg pointer-events-auto`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3400);
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODAL
+// ════════════════════════════════════════════════════════════
+function showModal(html) {
+  document.getElementById('modal-box').innerHTML = html;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+function closeModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
+
+// ════════════════════════════════════════════════════════════
+//  LOGIN / APP TOGGLE
+// ════════════════════════════════════════════════════════════
+function showLogin() {
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('app-shell').classList.add('hidden');
+  document.getElementById('login-error').classList.add('hidden');
+}
+function showApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
+  if (ME.role === 'admin') navigate('dashboard');
+  else navigate('partyList');
+}
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: DASHBOARD
+// ════════════════════════════════════════════════════════════
+reg('dashboard', () => {
+  const totalOut   = APP.parties.reduce((s,p) => s + getOutstanding(p.id), 0);
+  const todayStr   = today();
+  const todayColl  = APP.txns.filter(t => t.type==='payment' && t.date===todayStr).reduce((s,t) => s + +t.amount, 0);
+  const unv        = APP.txns.filter(t => t.type==='payment' && !t.verified).length;
+  const fom        = firstOfMonth();
+
+  const rows = APP.profiles.filter(p => p.role==='salesman').map(sm => {
+    const pts  = APP.parties.filter(p => p.salesman_id===sm.id);
+    const out  = pts.reduce((s,p) => s + getOutstanding(p.id), 0);
+    const pids = new Set(pts.map(p=>p.id));
+    const mtd  = APP.txns.filter(t => t.type==='payment' && t.date>=fom && pids.has(t.party_id)).reduce((s,t) => s + +t.amount, 0);
+    const uv   = APP.txns.filter(t => t.type==='payment' && !t.verified && pids.has(t.party_id)).length;
+    return { sm, cnt: pts.length, out, mtd, uv };
+  });
+
+  return `
+  <div class="max-w-5xl mx-auto">
+    <h2 class="text-2xl font-bold mb-5">Dashboard</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+      <div class="bg-white rounded-2xl shadow p-5">
+        <p class="text-xs text-gray-400 uppercase mb-1">Total Outstanding</p>
+        <p class="text-3xl font-bold text-blue-700">${rupees(totalOut)}</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow p-5">
+        <p class="text-xs text-gray-400 uppercase mb-1">Today's Collections</p>
+        <p class="text-3xl font-bold text-green-600">${rupees(todayColl)}</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow p-5 cursor-pointer hover:bg-gray-50" onclick="navigate('verify')">
+        <p class="text-xs text-gray-400 uppercase mb-1">Pending Verification</p>
+        <p class="text-3xl font-bold ${unv>0?'text-red-500':'text-gray-400'}">${unv}</p>
+      </div>
+    </div>
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-3 text-left">Salesman</th>
+            <th class="px-4 py-3 text-right">Parties</th>
+            <th class="px-4 py-3 text-right">Outstanding</th>
+            <th class="px-4 py-3 text-right">MTD Collection</th>
+            <th class="px-4 py-3 text-right">Unverified</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r=>`
+          <tr class="border-t hover:bg-gray-50">
+            <td class="px-4 py-3 font-medium">${r.sm.name}</td>
+            <td class="px-4 py-3 text-right">${r.cnt}</td>
+            <td class="px-4 py-3 text-right font-semibold">${rupees(r.out)}</td>
+            <td class="px-4 py-3 text-right text-green-600">${rupees(r.mtd)}</td>
+            <td class="px-4 py-3 text-right ${r.uv>0?'text-red-500 font-bold':''}">${r.uv||'—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+});
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: BILLS
+// ════════════════════════════════════════════════════════════
+reg('bills', () => {
+  const bills = APP.txns.filter(t => t.type==='bill').sort((a,b) => b.date.localeCompare(a.date));
+  return `
+  <div class="max-w-5xl mx-auto">
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <h2 class="text-2xl font-bold">Bills <span class="text-gray-400 text-lg">(${bills.length})</span></h2>
+      <button onclick="showAddBillModal()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700">+ Add Bill</button>
+    </div>
+    <input type="text" placeholder="Search party or ref…" oninput="filterRows(this,'bill-row')"
+           class="w-full border rounded-xl px-3 py-2 mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-3 text-left">Date</th>
+            <th class="px-4 py-3 text-left">Party</th>
+            <th class="px-4 py-3 text-left">Ref</th>
+            <th class="px-4 py-3 text-right">Amount</th>
+            <th class="px-4 py-3 text-left">Salesman</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${bills.map(b => {
+            const party = APP.parties.find(p => p.id===b.party_id);
+            const sm    = APP.profiles.find(p => p.id===b.salesman_id) || APP.profiles.find(p => p.id===party?.salesman_id);
+            return `<tr class="border-t hover:bg-gray-50 bill-row" data-q="${((party?.name||'')+' '+(b.ref||'')).toLowerCase()}">
+              <td class="px-4 py-3 text-gray-500">${fmtDate(b.date)}</td>
+              <td class="px-4 py-3 font-medium text-blue-600 cursor-pointer hover:underline"
+                  onclick="navigate('partyLedger',{partyId:'${b.party_id}'})">${party?.name||'—'}</td>
+              <td class="px-4 py-3 text-gray-400">${b.ref||'—'}</td>
+              <td class="px-4 py-3 text-right font-semibold">${rupees(b.amount)}</td>
+              <td class="px-4 py-3 text-gray-500">${sm?.name||'—'}</td>
+              <td class="px-4 py-3">
+                <button onclick="showEditTxnModal('${b.id}')" class="text-xs text-blue-600 hover:underline">Edit</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+});
+
+function filterRows(inp, cls) {
+  const q = inp.value.toLowerCase();
+  document.querySelectorAll('.'+cls).forEach(row => {
+    row.style.display = (row.dataset.q||row.dataset.name||'').toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: VERIFY PAYMENTS
+// ════════════════════════════════════════════════════════════
+reg('verify', () => `
+  <div class="max-w-5xl mx-auto">
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <h2 class="text-2xl font-bold">Verify Payments</h2>
+      <button id="verify-bulk-btn" onclick="verifySelected()" disabled
+              class="bg-green-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-green-700 disabled:opacity-40">
+        Verify Selected (0)
+      </button>
+    </div>
+    <div class="flex gap-2 flex-wrap mb-3">
+      <select id="vf-sm"   onchange="renderVerifyRows()" class="border rounded-lg px-2 py-1.5 text-sm">
+        <option value="">All Salesmen</option>
+        ${APP.profiles.filter(p=>p.role==='salesman').map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}
+      </select>
+      <input  id="vf-from" type="date" onchange="renderVerifyRows()" class="border rounded-lg px-2 py-1.5 text-sm">
+      <input  id="vf-to"   type="date" onchange="renderVerifyRows()" class="border rounded-lg px-2 py-1.5 text-sm">
+      <select id="vf-mode" onchange="renderVerifyRows()" class="border rounded-lg px-2 py-1.5 text-sm">
+        <option value="">All Modes</option>
+        <option>cash</option><option>cheque</option><option>upi</option>
+      </select>
+    </div>
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-3 py-3"><input type="checkbox" id="vf-all" onchange="toggleAllVerify(this.checked)"></th>
+            <th class="px-4 py-3 text-left">Date</th>
+            <th class="px-4 py-3 text-left">Party</th>
+            <th class="px-4 py-3 text-left">Salesman</th>
+            <th class="px-4 py-3 text-right">Amount</th>
+            <th class="px-4 py-3 text-left">Mode</th>
+            <th class="px-4 py-3 text-left">Ref</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody id="verify-tbody"></tbody>
+      </table>
+    </div>
+  </div>`
+);
+
+function renderVerifyRows() {
+  const smId  = document.getElementById('vf-sm')?.value;
+  const from  = document.getElementById('vf-from')?.value;
+  const to    = document.getElementById('vf-to')?.value;
+  const mode  = document.getElementById('vf-mode')?.value;
+
+  let rows = APP.txns.filter(t => t.type==='payment' && !t.verified);
+  if (smId) rows = rows.filter(t => APP.parties.find(p=>p.id===t.party_id)?.salesman_id === smId);
+  if (from) rows = rows.filter(t => t.date >= from);
+  if (to)   rows = rows.filter(t => t.date <= to);
+  if (mode) rows = rows.filter(t => t.mode === mode);
+  rows.sort((a,b) => a.date.localeCompare(b.date));
+
+  const tbody = document.getElementById('verify-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = rows.length ? rows.map(t => {
+    const party = APP.parties.find(p => p.id===t.party_id);
+    const sm    = APP.profiles.find(p => p.id===(party?.salesman_id));
+    return `<tr class="border-t hover:bg-gray-50">
+      <td class="px-3 py-3"><input type="checkbox" class="vcb" data-id="${t.id}" onchange="updVerifyCount()"></td>
+      <td class="px-4 py-3">${fmtDate(t.date)}</td>
+      <td class="px-4 py-3 font-medium">${party?.name||'—'}</td>
+      <td class="px-4 py-3 text-gray-500">${sm?.name||'—'}</td>
+      <td class="px-4 py-3 text-right font-semibold text-green-700">${rupees(t.amount)}</td>
+      <td class="px-4 py-3">${modeBadge(t.mode)}</td>
+      <td class="px-4 py-3 text-gray-400 text-xs">${t.ref||'—'}</td>
+      <td class="px-4 py-3">
+        <button onclick="verifySingle('${t.id}')" class="bg-green-600 text-white text-xs px-2 py-1 rounded hover:bg-green-700">✓</button>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="8" class="px-4 py-10 text-center text-gray-400">All payments verified ✓</td></tr>';
+}
+
+function updVerifyCount() {
+  const n   = document.querySelectorAll('.vcb:checked').length;
+  const btn = document.getElementById('verify-bulk-btn');
+  if (btn) { btn.disabled = n===0; btn.textContent = `Verify Selected (${n})`; }
+}
+function toggleAllVerify(checked) {
+  document.querySelectorAll('.vcb').forEach(cb => cb.checked = checked);
+  updVerifyCount();
+}
+
+async function verifySingle(id) {
+  const now = new Date().toISOString();
+  const { error } = await _sb.from('transactions').update({ verified:true, verified_by:ME.id, verified_at:now }).eq('id',id);
+  if (error) { toast(error.message,'error'); return; }
+  patchCache('txns',{id,verified:true,verified_by:ME.id,verified_at:now});
+  toast('Payment verified');
+  renderVerifyRows(); renderNav();
+}
+
+async function verifySelected() {
+  const ids = [...document.querySelectorAll('.vcb:checked')].map(cb=>cb.dataset.id);
+  if (!ids.length) return;
+  const now = new Date().toISOString();
+  const { error } = await _sb.from('transactions').update({ verified:true, verified_by:ME.id, verified_at:now }).in('id',ids);
+  if (error) { toast(error.message,'error'); return; }
+  ids.forEach(id => patchCache('txns',{id,verified:true,verified_by:ME.id,verified_at:now}));
+  toast(`${ids.length} payments verified`);
+  renderVerifyRows(); renderNav();
+}
+
+// Attach filter listeners after DOM render
+document.addEventListener('click', e => {
+  if (currentView === 'verify' && !document.getElementById('verify-tbody')?.hasChildNodes()) {
+    setTimeout(renderVerifyRows, 50);
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: PARTY LEDGER (Admin)
+// ════════════════════════════════════════════════════════════
+reg('partyLedger', ({ partyId }) => {
+  const party   = APP.parties.find(p => p.id===partyId);
+  const ledger  = getLedger(partyId);
+  const aging   = calcAging(partyId);
+  const snap    = APP.openings.find(o => o.party_id===partyId && o.as_on_date==='2026-05-22');
+  const calcBal = ledger.length ? ledger[ledger.length-1].balance : 0;
+  const snapBal = snap ? +snap.total : null;
+  const mm      = snapBal !== null && Math.abs(calcBal - snapBal) > 1;
+  const sm      = APP.profiles.find(p => p.id===party?.salesman_id);
+
+  return `
+  <div class="max-w-4xl mx-auto">
+    <div class="flex items-center gap-2 mb-4 flex-wrap">
+      <button onclick="history.back()" class="text-gray-400 hover:text-gray-600 text-sm">← Back</button>
+      <h2 class="text-xl font-bold">${party?.name||'Party'}</h2>
+      ${sm ? `<span class="text-xs text-gray-400 border rounded px-2 py-0.5">${sm.name}</span>` : ''}
+      ${mm ? `<span class="text-yellow-600 text-sm font-medium">⚠️ Mismatch vs 22-May snapshot (calc ${rupees(calcBal)} / snap ${rupees(snapBal)})</span>` : ''}
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+      ${[['0–30',aging.b0,'bg-green-50 text-green-700'],['31–60',aging.b31,'bg-yellow-50 text-yellow-700'],['61–90',aging.b61,'bg-orange-50 text-orange-700'],['90+',aging.b90,'bg-red-50 text-red-700']].map(([l,a,c])=>`
+      <div class="rounded-2xl p-3 ${c}">
+        <p class="text-xs font-medium mb-0.5">${l} days</p>
+        <p class="text-xl font-bold">${rupees(a)}</p>
+      </div>`).join('')}
+    </div>
+
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <div class="flex items-center justify-between px-4 pt-4 pb-2">
+        <span class="font-semibold text-sm">Ledger</span>
+        <div class="flex gap-2">
+          <button onclick="showAddBillModal('${partyId}')" class="text-xs bg-blue-600 text-white px-3 py-1 rounded-lg hover:bg-blue-700">+ Bill</button>
+          <button onclick="showRecordPaymentModal('${partyId}')" class="text-xs bg-green-600 text-white px-3 py-1 rounded-lg hover:bg-green-700">+ Payment</button>
+        </div>
+      </div>
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-2 text-left">Date</th>
+            <th class="px-4 py-2 text-left">Type</th>
+            <th class="px-4 py-2 text-left">Ref</th>
+            <th class="px-4 py-2 text-right">Debit</th>
+            <th class="px-4 py-2 text-right">Credit</th>
+            <th class="px-4 py-2 text-right">Balance</th>
+            <th class="px-4 py-2"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ledger.map(r=>`
+          <tr class="border-t ${r.type==='opening'?'bg-blue-50':'hover:bg-gray-50'}">
+            <td class="px-4 py-2 text-gray-500 text-xs">${fmtDate(r.date)}</td>
+            <td class="px-4 py-2 text-xs">
+              ${r.type==='bill' ? `<span class="text-blue-600">Bill</span>`
+              : r.type==='payment' ? `<span class="text-green-600">Payment ${r.verified?'✅':'🕐'}</span>`
+              : `<span class="text-gray-400 italic">Opening</span>`}
+            </td>
+            <td class="px-4 py-2 text-gray-400 text-xs">${r.ref||'—'}</td>
+            <td class="px-4 py-2 text-right">${r.debit ? rupees(r.debit):'—'}</td>
+            <td class="px-4 py-2 text-right text-green-600">${r.credit ? rupees(r.credit):'—'}</td>
+            <td class="px-4 py-2 text-right font-semibold">${rupees(r.balance)}</td>
+            <td class="px-4 py-2">${r.id?`<button onclick="showEditTxnModal('${r.id}')" class="text-xs text-blue-500 hover:underline">Edit</button>`:''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+});
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: PARTIES
+// ════════════════════════════════════════════════════════════
+reg('parties', () => `
+  <div class="max-w-5xl mx-auto">
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <h2 class="text-2xl font-bold">Parties <span class="text-gray-400 text-lg">(${APP.parties.length})</span></h2>
+      <button onclick="showAddPartyModal()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700">+ Add Party</button>
+    </div>
+    <input type="text" placeholder="Search party…" oninput="filterRows(this,'party-row')"
+           class="w-full border rounded-xl px-3 py-2 mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-3 text-left">Party</th>
+            <th class="px-4 py-3 text-left">City</th>
+            <th class="px-4 py-3 text-left">Salesman</th>
+            <th class="px-4 py-3 text-right">Outstanding</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${APP.parties.map(p=>{
+            const sm = APP.profiles.find(pr=>pr.id===p.salesman_id);
+            return `<tr class="border-t hover:bg-gray-50 party-row" data-name="${p.name.toLowerCase()}">
+              <td class="px-4 py-3 font-medium text-blue-600 cursor-pointer hover:underline"
+                  onclick="navigate('partyLedger',{partyId:'${p.id}'})">${p.name}</td>
+              <td class="px-4 py-3 text-gray-400">${p.city||'—'}</td>
+              <td class="px-4 py-3">${sm?.name||'—'}</td>
+              <td class="px-4 py-3 text-right font-semibold">${rupees(getOutstanding(p.id))}</td>
+              <td class="px-4 py-3"><button onclick="showEditPartyModal('${p.id}')" class="text-xs text-blue-500 hover:underline">Edit</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`
+);
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: USERS
+// ════════════════════════════════════════════════════════════
+reg('users', () => `
+  <div class="max-w-3xl mx-auto">
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+      <h2 class="text-2xl font-bold">Users</h2>
+      <button onclick="showAddUserModal()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700">+ Add User</button>
+    </div>
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-3 text-left">Name</th>
+            <th class="px-4 py-3 text-left">Mobile</th>
+            <th class="px-4 py-3 text-left">Role</th>
+            <th class="px-4 py-3 text-left">Status</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${APP.profiles.map(p=>`
+          <tr class="border-t hover:bg-gray-50">
+            <td class="px-4 py-3 font-medium">${p.name}</td>
+            <td class="px-4 py-3 text-gray-500">${p.mobile||'—'}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-0.5 rounded text-xs font-medium ${p.role==='admin'?'bg-purple-100 text-purple-700':'bg-blue-100 text-blue-700'}">${p.role}</span>
+            </td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-0.5 rounded text-xs ${p.status==='active'?'bg-green-100 text-green-700':'bg-gray-100 text-gray-500'}">${p.status}</span>
+            </td>
+            <td class="px-4 py-3">${p.id!==ME.id?`<button onclick="showEditUserModal('${p.id}')" class="text-xs text-blue-500 hover:underline">Edit</button>`:''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`
+);
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: SETTINGS
+// ════════════════════════════════════════════════════════════
+reg('settings', () => `
+  <div class="max-w-lg mx-auto">
+    <h2 class="text-2xl font-bold mb-5">Settings</h2>
+    <div class="bg-white rounded-2xl shadow p-6 space-y-5">
+      <div>
+        <label class="block text-sm font-semibold mb-1">Supabase Service Role Key</label>
+        <p class="text-xs text-gray-400 mb-2">Required for creating users. Stored only in your browser's localStorage.</p>
+        <input type="password" id="srk" value="${localStorage.getItem('pb_srk')||''}"
+               class="w-full border rounded-xl px-3 py-2 text-sm font-mono"
+               placeholder="eyJh…">
+        <button onclick="saveSrk()" class="mt-2 bg-gray-800 text-white px-4 py-2 rounded-xl text-sm">Save Key</button>
+      </div>
+      <hr>
+      <div>
+        <p class="text-sm text-gray-500">Logged in as <span class="font-semibold text-gray-800">${ME?.name}</span> · ${ME?.role} · ${ME?.mobile||''}</p>
+      </div>
+    </div>
+  </div>`
+);
+
+function saveSrk() {
+  const k = document.getElementById('srk').value.trim();
+  if (k) localStorage.setItem('pb_srk', k); else localStorage.removeItem('pb_srk');
+  initAdminSb();
+  toast('Service key saved');
+}
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: IMPORT
+// ════════════════════════════════════════════════════════════
+reg('import', () => `
+  <div class="max-w-3xl mx-auto">
+    <h2 class="text-2xl font-bold mb-1">Import Data</h2>
+    <p class="text-sm text-gray-400 mb-5">One-time setup. Complete steps in order.</p>
+    <div class="space-y-4">
+
+      <div class="bg-white rounded-2xl shadow p-5">
+        <h3 class="font-bold mb-1">Step 1 — Salesman &amp; Party Mapping</h3>
+        <p class="text-xs text-gray-400 mb-3">Columns: Name | Agent | category  (e.g. salesman_agent list.xlsx)</p>
+        <input type="file" accept=".xlsx,.xls" id="f1" class="text-sm mb-2 block">
+        <button onclick="importMapping()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm">Preview &amp; Import</button>
+        <div id="p1" class="mt-3 text-sm"></div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-5">
+        <h3 class="font-bold mb-1">Step 2 — Opening Balances (01 Apr 2026)</h3>
+        <p class="text-xs text-gray-400 mb-3">Columns: Party | 0-30 | 31-60 | 61-90 | 90+  (aging list as on 01/04/26)</p>
+        <input type="file" accept=".xlsx,.xls" id="f2" class="text-sm mb-2 block">
+        <button onclick="importOpenings('2026-04-01','f2','p2')" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm">Preview &amp; Import</button>
+        <div id="p2" class="mt-3 text-sm"></div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-5">
+        <h3 class="font-bold mb-1">Step 3 — Party Ledgers (01 Apr – 25 May 2026)</h3>
+        <p class="text-xs text-gray-400 mb-3">Full ledger export (LEDGERS 01.04.26 TO 25.05.26.xlsx)</p>
+        <input type="file" accept=".xlsx,.xls" id="f3" class="text-sm mb-2 block">
+        <button onclick="importLedgers()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm">Preview &amp; Import</button>
+        <div id="p3" class="mt-3 text-sm"></div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow p-5">
+        <h3 class="font-bold mb-1">Step 4 — Cross-check Snapshot (22 May 2026)</h3>
+        <p class="text-xs text-gray-400 mb-3">Aging list as on 22/05/2026 for balance verification</p>
+        <input type="file" accept=".xlsx,.xls" id="f4" class="text-sm mb-2 block">
+        <button onclick="importOpenings('2026-05-22','f4','p4')" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm">Preview &amp; Import</button>
+        <div id="p4" class="mt-3 text-sm"></div>
+      </div>
+
+    </div>
+  </div>`
+);
+
+// ─── IMPORT HELPERS ───────────────────────────────────────────────────────────
+function readXlsx(inputId) {
+  return new Promise((res, rej) => {
+    const f = document.getElementById(inputId)?.files[0];
+    if (!f) { rej('No file selected'); return; }
+    const r = new FileReader();
+    r.onload = e => res(XLSX.read(e.target.result, { type:'array', cellDates:true }));
+    r.onerror = rej;
+    r.readAsArrayBuffer(f);
+  });
+}
+
+async function importMapping() {
+  const p = document.getElementById('p1');
+  try {
+    const wb   = await readXlsx('f1');
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1 })
+                   .slice(1).filter(r => r[0] && r[1])
+                   .map(r => ({ name: String(r[0]).trim(), agent: String(r[1]).trim(), cat: String(r[2]||'').trim() }));
+    const agents = [...new Set(rows.map(r=>r.agent))];
+    window._mapping = rows;
+    p.innerHTML = `
+      <p class="text-gray-600 mb-2">${rows.length} parties · ${agents.length} salesmen: <strong>${agents.join(', ')}</strong></p>
+      <div class="border rounded text-xs font-mono p-2 bg-gray-50 max-h-36 overflow-y-auto">
+        ${rows.slice(0,15).map(r=>`<div>${r.name} → ${r.agent}</div>`).join('')}
+        ${rows.length>15?`<div class="text-gray-400">…${rows.length-15} more</div>`:''}
+      </div>
+      <button onclick="confirmMapping()" class="mt-2 bg-green-600 text-white px-4 py-2 rounded-xl text-sm">Confirm Import</button>`;
+  } catch(e) { p.innerHTML = `<span class="text-red-500">${e}</span>`; }
+}
+
+async function confirmMapping() {
+  const p    = document.getElementById('p1');
+  const rows = window._mapping;
+  if (!rows) return;
+  p.innerHTML = '<span class="text-gray-400">Creating accounts…</span>';
+
+  const { data: exProfiles } = await _sb.from('profiles').select('*');
+  const profileMap = {};
+  exProfiles?.forEach(pr => { profileMap[pr.name.toLowerCase()] = pr; });
+
+  const agents = [...new Set(rows.map(r=>r.agent))];
+  const agentId = {};
+
+  for (const a of agents) {
+    const ex = profileMap[a.toLowerCase()];
+    if (ex) { agentId[a] = ex.id; continue; }
+    const mobile = a.toLowerCase().replace(/[^a-z0-9]/g,'') + '001';
+    const email  = mobileToEmail(mobile);
+    const pw     = 'PBW@2026';
+    let uid;
+    if (_adminSb) {
+      const { data } = await _adminSb.auth.admin.createUser({ email, password:pw, email_confirm:true });
+      uid = data?.user?.id;
+    } else {
+      const { data } = await _sb.auth.signUp({ email, password:pw });
+      uid = data?.user?.id;
+    }
+    if (uid) {
+      await _sb.from('profiles').upsert({ id:uid, name:a, mobile, role:'salesman', status:'active' });
+      agentId[a] = uid;
+    }
+  }
+
+  const { data: fresh } = await _sb.from('profiles').select('*');
+  APP.profiles = fresh || [];
+  fresh?.forEach(pr => { if (!agentId[pr.name]) agentId[pr.name.toLowerCase()] = pr.id; });
+
+  const { data: exParties } = await _sb.from('parties').select('name');
+  const existing = new Set(exParties?.map(p=>p.name.toLowerCase())||[]);
+  const toInsert = rows.filter(r => !existing.has(r.name.toLowerCase()) && agentId[r.agent])
+                       .map(r => ({ name:r.name, salesman_id: agentId[r.agent], status:'active' }));
+  let ins = 0;
+  for (let i=0; i<toInsert.length; i+=50) {
+    const { error } = await _sb.from('parties').insert(toInsert.slice(i,i+50));
+    if (!error) ins += Math.min(50, toInsert.length-i);
+  }
+  const { data: allP } = await _sb.from('parties').select('*').order('name');
+  APP.parties = allP || [];
+  p.innerHTML = `<span class="text-green-600 font-medium">✓ ${ins} parties imported. ${agents.length} salesman accounts ready. Default password: <code class="bg-gray-100 px-1 rounded">PBW@2026</code></span>`;
+}
+
+async function importOpenings(date, inputId, previewId) {
+  const p = document.getElementById(previewId);
+  try {
+    const wb   = await readXlsx(inputId);
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1 })
+                   .slice(1).filter(r => r[0] && typeof r[0]==='string');
+    window['_ob_'+previewId] = { date, rows };
+    p.innerHTML = `
+      <p class="text-gray-600 mb-2">${rows.length} parties found</p>
+      <div class="border rounded text-xs font-mono p-2 bg-gray-50 max-h-32 overflow-y-auto">
+        ${rows.slice(0,8).map(r=>`<div>${r.slice(0,6).join(' | ')}</div>`).join('')}
+      </div>
+      <button onclick="confirmOpenings('${date}','${previewId}')" class="mt-2 bg-green-600 text-white px-4 py-2 rounded-xl text-sm">Confirm Import</button>`;
+  } catch(e) { p.innerHTML = `<span class="text-red-500">${e}</span>`; }
+}
+
+async function confirmOpenings(date, previewId) {
+  const p    = document.getElementById(previewId);
+  const data = window['_ob_'+previewId];
+  if (!data) return;
+  p.innerHTML = '<span class="text-gray-400">Importing…</span>';
+
+  const pm = {}; APP.parties.forEach(pt => { pm[pt.name.toLowerCase().trim()] = pt.id; });
+  const records = []; const unm = [];
+
+  for (const row of data.rows) {
+    const n  = String(row[0]).trim();
+    const id = pm[n.toLowerCase()];
+    if (!id) { unm.push(n); continue; }
+    const a = [parseFloat(row[1])||0, parseFloat(row[2])||0, parseFloat(row[3])||0, parseFloat(row[4])||0];
+    records.push({ party_id:id, as_on_date:date, amt_0_30:a[0], amt_31_60:a[1], amt_61_90:a[2], amt_90_plus:a[3], total:a.reduce((s,v)=>s+v,0)||parseFloat(row[5])||0 });
+  }
+  for (let i=0; i<records.length; i+=50)
+    await _sb.from('opening_balances').upsert(records.slice(i,i+50), { onConflict:'party_id,as_on_date' });
+
+  const { data: ob } = await _sb.from('opening_balances').select('*');
+  APP.openings = ob || [];
+  p.innerHTML = `<span class="text-green-600 font-medium">✓ ${records.length} records saved.</span>
+    ${unm.length?`<span class="text-yellow-600 ml-2">⚠️ ${unm.length} unmatched: ${unm.slice(0,4).join(', ')}${unm.length>4?'…':''}</span>`:''}`;
+}
+
+async function importLedgers() {
+  const p = document.getElementById('p3');
+  try {
+    const wb   = await readXlsx('f3');
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1 });
+    const pts  = parseLedger(rows);
+    const txns = pts.reduce((s,pt)=>s+pt.txns.length,0);
+    window._ledger = pts;
+    p.innerHTML = `
+      <p class="text-gray-600 mb-2">${pts.length} parties · ${txns} transactions found</p>
+      <div class="border rounded text-xs font-mono p-2 bg-gray-50 max-h-36 overflow-y-auto">
+        ${pts.slice(0,6).map(pt=>`<div><b>${pt.name}</b> opening=${rupees(pt.opening)} txns=${pt.txns.length}</div>`).join('')}
+        ${pts.length>6?`<div class="text-gray-400">…${pts.length-6} more</div>`:''}
+      </div>
+      <button onclick="confirmLedgers()" class="mt-2 bg-green-600 text-white px-4 py-2 rounded-xl text-sm">Confirm Import</button>`;
+  } catch(e) { p.innerHTML = `<span class="text-red-500">Error: ${e.message||e}</span>`; }
+}
+
+function parseLedger(rows) {
+  const out = []; let cur = null;
+  for (const row of rows) {
+    const [date, desc, ref, details,,debit, credit] = row;
+    const ds = String(desc||'').trim();
+    const dt = String(date||'').trim();
+    if (ds.toLowerCase().includes('_2description_') || ds.toLowerCase()==='description') continue;
+    if (!dt && ds && !['report total','balance c/f',''].includes(ds.toLowerCase()) && !ds.startsWith('_')) {
+      cur = { name: ds, opening: 0, txns: [] }; out.push(cur); continue;
+    }
+    if (!cur || !dt) continue;
+    const iso = xlDate(dt); if (!iso) continue;
+    if (ds.toLowerCase().includes('balance b/f') || ds.toLowerCase().includes('opening')) {
+      cur.opening = parseFloat(debit)||parseFloat(credit)||0; continue;
+    }
+    if (ds.toUpperCase().includes('SALES') && debit)
+      cur.txns.push({ date:iso, type:'bill', amount:parseFloat(debit), ref:String(ref||'').trim() });
+    else if (credit) {
+      const det = String(details||'').toUpperCase();
+      let mode = 'na';
+      if (det.includes('CHEQ')||det.includes('CHQ')) mode='cheque';
+      else if (det.includes('UPI')||det.includes('NEFT')||det.includes('RTGS')||det.includes('IMPS')) mode='upi';
+      else if (det.includes('CASH')) mode='cash';
+      cur.txns.push({ date:iso, type:'payment', amount:parseFloat(credit), mode, ref:String(ref||'').trim() });
+    }
+  }
+  return out.filter(p => p.name && (p.opening>0 || p.txns.length>0));
+}
+
+function xlDate(s) {
+  if (!s) return null;
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (!m) return null;
+  let y = m[3]; if (y.length===2) y='20'+y;
+  return `${y}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+}
+
+async function confirmLedgers() {
+  const p   = document.getElementById('p3');
+  const pts = window._ledger;
+  if (!pts) return;
+  p.innerHTML = '<span class="text-gray-400">Importing… please wait.</span>';
+
+  const pm = {}; APP.parties.forEach(pt => { pm[pt.name.toLowerCase().trim()] = pt; });
+  const txnB = []; const obB = []; const unm = [];
+
+  for (const lp of pts) {
+    const match = pm[lp.name.toLowerCase().trim()];
+    if (!match) { unm.push(lp.name); continue; }
+    const pid = match.id, smId = match.salesman_id;
+    if (lp.opening > 0)
+      obB.push({ party_id:pid, as_on_date:FY_START, amt_0_30:0, amt_31_60:0, amt_61_90:0, amt_90_plus:lp.opening, total:lp.opening });
+    for (const t of lp.txns)
+      txnB.push({ party_id:pid, salesman_id:smId, date:t.date, type:t.type, amount:t.amount, mode:t.mode||'na', ref:t.ref||null, source:'import', verified: t.type==='payment' });
+  }
+
+  for (let i=0; i<obB.length;  i+=50) await _sb.from('opening_balances').upsert(obB.slice(i,i+50),{onConflict:'party_id,as_on_date'});
+  for (let i=0; i<txnB.length; i+=100) await _sb.from('transactions').insert(txnB.slice(i,i+100));
+
+  const [pR,tR,oR] = await Promise.all([
+    _sb.from('parties').select('*').order('name'),
+    _sb.from('transactions').select('*').gte('date',FY_START).order('date'),
+    _sb.from('opening_balances').select('*'),
+  ]);
+  APP.parties=pR.data||[]; APP.txns=tR.data||[]; APP.openings=oR.data||[];
+
+  p.innerHTML = `<span class="text-green-600 font-medium">✓ ${obB.length} opening balances · ${txnB.length} transactions imported.</span>
+    ${unm.length?`<br><span class="text-yellow-600">⚠️ ${unm.length} unmatched: ${unm.slice(0,5).join(', ')}${unm.length>5?'…':''} (run Step 1 first)</span>`:''}`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: SALESMAN — PARTY LIST
+// ════════════════════════════════════════════════════════════
+reg('partyList', () => {
+  const pts = ME.role==='admin' ? APP.parties : APP.parties.filter(p=>p.salesman_id===ME.id);
+  return `
+  <div class="max-w-2xl mx-auto">
+    <h2 class="text-xl font-bold mb-3">My Parties <span class="text-gray-400 text-sm">(${pts.length})</span></h2>
+    <input type="text" placeholder="Search…" oninput="filterRows(this,'pcard')"
+           class="w-full border rounded-xl px-3 py-2 mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+    <div class="space-y-3">
+      ${pts.map(p => partyCard(p)).join('') || '<p class="text-center text-gray-400 py-10">No parties assigned</p>'}
+    </div>
+  </div>`;
+});
+
+function partyCard(p) {
+  const ag   = calcAging(p.id);
+  const chips = [
+    ag.b0  > 0 ? `<span class="px-2 py-0.5 rounded text-xs bg-green-100 text-green-700">🟢 ${rupees(ag.b0)}</span>`  : '',
+    ag.b31 > 0 ? `<span class="px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700">🟡 ${rupees(ag.b31)}</span>` : '',
+    ag.b61 > 0 ? `<span class="px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-700">🟠 ${rupees(ag.b61)}</span>` : '',
+    ag.b90 > 0 ? `<span class="px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">🔴 ${rupees(ag.b90)}</span>`     : '',
+  ].filter(Boolean).join('');
+  return `
+  <div class="bg-white rounded-2xl shadow p-4 cursor-pointer hover:shadow-md active:shadow-sm transition pcard"
+       data-name="${p.name.toLowerCase()}" onclick="navigate('partyDetail',{partyId:'${p.id}'})">
+    <div class="flex justify-between items-start mb-2">
+      <div>
+        <p class="font-bold text-gray-900 leading-tight">${p.name}</p>
+        ${p.city?`<p class="text-xs text-gray-400">${p.city}</p>`:''}
+      </div>
+      <p class="text-xl font-bold text-gray-900 ml-2">${rupees(ag.total)}</p>
+    </div>
+    ${chips ? `<div class="flex gap-1 flex-wrap mb-2">${chips}</div>` : ''}
+    <div class="flex gap-4 text-xs text-gray-400">
+      <span>Bill: ${fmtDate(getLastDate(p.id,'bill'))}</span>
+      <span>Pmt: ${fmtDate(getLastDate(p.id,'payment'))}</span>
+    </div>
+  </div>`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: SALESMAN — PARTY DETAIL
+// ════════════════════════════════════════════════════════════
+reg('partyDetail', ({ partyId }) => {
+  const party    = APP.parties.find(p=>p.id===partyId);
+  const ag       = calcAging(partyId);
+  const ledger   = getLedger(partyId);
+  const bills    = APP.txns.filter(t=>t.party_id===partyId&&t.type==='bill').sort((a,b)=>b.date.localeCompare(a.date));
+  const payments = APP.txns.filter(t=>t.party_id===partyId&&t.type==='payment').sort((a,b)=>b.date.localeCompare(a.date));
+
+  const agingGrid = [['0–30',ag.b0,'bg-green-50 text-green-700'],['31–60',ag.b31,'bg-yellow-50 text-yellow-700'],['61–90',ag.b61,'bg-orange-50 text-orange-700'],['90+',ag.b90,'bg-red-50 text-red-700']]
+    .map(([l,a,c])=>`<div class="rounded-2xl p-3 ${c}"><p class="text-xs font-medium">${l} days</p><p class="font-bold text-xl">${rupees(a)}</p></div>`).join('');
+
+  const ledgerRows = ledger.map(r=>`
+    <tr class="border-t ${r.type==='opening'?'bg-blue-50':''}">
+      <td class="px-3 py-2 text-xs text-gray-400">${fmtDate(r.date)}</td>
+      <td class="px-3 py-2 text-xs ${r.type==='bill'?'text-blue-600':r.type==='payment'?'text-green-600':'text-gray-400 italic'}">
+        ${r.type==='bill'?'Bill':r.type==='payment'?`Pmt ${r.verified?'✅':'🕐'}`:'Opening'}
+      </td>
+      <td class="px-3 py-2 text-xs text-gray-400">${r.ref||'—'}</td>
+      <td class="px-3 py-2 text-right text-xs">${r.debit?rupees(r.debit):'—'}</td>
+      <td class="px-3 py-2 text-right text-xs text-green-600">${r.credit?rupees(r.credit):'—'}</td>
+      <td class="px-3 py-2 text-right text-xs font-semibold">${rupees(r.balance)}</td>
+    </tr>`).join('');
+
+  const billCards = bills.map(b=>`
+    <div class="bg-white rounded-xl shadow p-4">
+      <div class="flex justify-between">
+        <span class="font-semibold">${rupees(b.amount)}</span>
+        <span class="text-sm text-gray-400">${fmtDate(b.date)}</span>
+      </div>
+      <p class="text-xs text-gray-400 mt-1">Ref: ${b.ref||'—'}</p>
+    </div>`).join('') || '<p class="text-gray-400 text-center py-8 text-sm">No bills</p>';
+
+  const pmtCards = payments.map(pm=>`
+    <div class="bg-white rounded-xl shadow p-4">
+      <div class="flex justify-between items-start">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-green-700">${rupees(pm.amount)}</span>
+          ${modeBadge(pm.mode)}
+        </div>
+        <div class="text-right">
+          <span class="text-xs text-gray-400">${fmtDate(pm.date)}</span>
+          <span class="ml-1">${pm.verified?'✅':'🕐'}</span>
+        </div>
+      </div>
+      ${pm.ref?`<p class="text-xs text-gray-400 mt-1">Ref: ${pm.ref}</p>`:''}
+      ${pm.notes?`<p class="text-xs text-gray-400">${pm.notes}</p>`:''}
+    </div>`).join('') || '<p class="text-gray-400 text-center py-8 text-sm">No payments</p>';
+
+  return `
+  <div class="max-w-2xl mx-auto pb-24">
+    <div class="flex items-center gap-2 mb-4">
+      <button onclick="navigate('partyList')" class="text-gray-400 hover:text-gray-600 text-sm">← Back</button>
+      <h2 class="text-xl font-bold">${party?.name||'—'}</h2>
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">${agingGrid}</div>
+
+    <div class="flex border-b mb-4">
+      <button class="tab-btn tab-active px-4 py-2 text-sm font-medium" onclick="switchTab(0,this)">Ledger</button>
+      <button class="tab-btn px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700" onclick="switchTab(1,this)">Bills (${bills.length})</button>
+      <button class="tab-btn px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700" onclick="switchTab(2,this)">Payments (${payments.length})</button>
+    </div>
+
+    <div id="tab-0">
+      <div class="bg-white rounded-2xl shadow overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-xs uppercase text-gray-400">
+            <tr><th class="px-3 py-2 text-left">Date</th><th class="px-3 py-2 text-left">Type</th><th class="px-3 py-2 text-left">Ref</th><th class="px-3 py-2 text-right">Dr</th><th class="px-3 py-2 text-right">Cr</th><th class="px-3 py-2 text-right">Bal</th></tr>
+          </thead>
+          <tbody>${ledgerRows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div id="tab-1" class="hidden space-y-2">${billCards}</div>
+    <div id="tab-2" class="hidden space-y-2">${pmtCards}</div>
+
+    <div class="fixed bottom-0 left-0 right-0 bg-white border-t px-4 py-3 flex gap-2 z-20">
+      <button onclick="showRecordPaymentModal('${partyId}')"
+              class="flex-1 bg-green-600 text-white py-3 rounded-2xl font-semibold text-sm hover:bg-green-700">
+        Record Payment
+      </button>
+      ${ME.role==='admin'?`<button onclick="showAddBillModal('${partyId}')" class="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm hover:bg-blue-700">Add Bill</button>`:''}
+    </div>
+  </div>`;
+});
+
+function switchTab(idx, btn) {
+  document.querySelectorAll('[id^="tab-"]').forEach(el => el.classList.add('hidden'));
+  document.getElementById('tab-'+idx)?.classList.remove('hidden');
+  document.querySelectorAll('.tab-btn').forEach(b => { b.classList.remove('tab-active'); b.classList.add('text-gray-500'); });
+  btn.classList.add('tab-active'); btn.classList.remove('text-gray-500');
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — RECORD PAYMENT
+// ════════════════════════════════════════════════════════════
+function showRecordPaymentModal(partyId) {
+  const party = APP.parties.find(p=>p.id===partyId);
+  showModal(`
+    <h3 class="text-lg font-bold mb-4">Record Payment — ${party?.name}</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Date</label>
+        <input type="date" id="pm-date" value="${today()}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Amount (₹)</label>
+        <input type="number" id="pm-amt" placeholder="0" step="1" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Mode</label>
+        <select id="pm-mode" onchange="toggleRef()" class="w-full border rounded-xl px-3 py-2 text-sm">
+          <option value="cash">Cash</option>
+          <option value="cheque">Cheque</option>
+          <option value="upi">UPI</option>
+        </select></div>
+      <div id="pm-ref-group"><label class="text-xs text-gray-400 block mb-1">Ref / Cheque No.</label>
+        <input type="text" id="pm-ref" placeholder="Cheque / UTR number" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Notes (optional)</label>
+        <input type="text" id="pm-notes" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitPayment('${partyId}')" class="flex-1 bg-green-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Save</button>
+      </div>
+    </div>`);
+  toggleRef();
+}
+
+function toggleRef() {
+  const m = document.getElementById('pm-mode')?.value;
+  const g = document.getElementById('pm-ref-group');
+  if (g) g.style.display = m==='cash' ? 'none' : '';
+}
+
+async function submitPayment(partyId) {
+  const date   = document.getElementById('pm-date').value;
+  const amount = parseFloat(document.getElementById('pm-amt').value);
+  const mode   = document.getElementById('pm-mode').value;
+  const ref    = document.getElementById('pm-ref')?.value.trim() || null;
+  const notes  = document.getElementById('pm-notes').value.trim() || null;
+  if (!date || !amount || amount<=0) { toast('Enter valid date & amount','error'); return; }
+
+  const party  = APP.parties.find(p=>p.id===partyId);
+  const newTxn = { party_id:partyId, salesman_id:party?.salesman_id||ME.id, date, type:'payment', amount, mode, ref, notes, source:'manual', verified:false };
+
+  // Optimistic
+  const tmp = 'tmp_'+Date.now();
+  APP.txns.push({ ...newTxn, id:tmp, created_at:new Date().toISOString() });
+  closeModal();
+  navigate(currentView, currentParams);
+  toast('Payment recorded');
+
+  const { data, error } = await _sb.from('transactions').insert(newTxn).select().single();
+  if (error) { APP.txns = APP.txns.filter(t=>t.id!==tmp); toast('Save failed: '+error.message,'error'); return; }
+  const i = APP.txns.findIndex(t=>t.id===tmp); if (i>=0) APP.txns[i] = data;
+  renderNav();
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — ADD BILL
+// ════════════════════════════════════════════════════════════
+function showAddBillModal(partyId) {
+  const parties = ME.role==='admin' ? APP.parties : APP.parties.filter(p=>p.salesman_id===ME.id);
+  showModal(`
+    <h3 class="text-lg font-bold mb-4">Add Bill</h3>
+    <div class="space-y-3">
+      ${!partyId?`<div><label class="text-xs text-gray-400 block mb-1">Party</label>
+        <select id="bl-party" class="w-full border rounded-xl px-3 py-2 text-sm">
+          ${parties.map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}
+        </select></div>`:''}
+      <div><label class="text-xs text-gray-400 block mb-1">Date</label>
+        <input type="date" id="bl-date" value="${today()}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Amount (₹)</label>
+        <input type="number" id="bl-amt" placeholder="0" step="1" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Bill / Ref No.</label>
+        <input type="text" id="bl-ref" placeholder="PBK/0001" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Notes</label>
+        <input type="text" id="bl-notes" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitBill('${partyId||''}')" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Save</button>
+      </div>
+    </div>`);
+}
+
+async function submitBill(partyId) {
+  const pid    = partyId || document.getElementById('bl-party')?.value;
+  const date   = document.getElementById('bl-date').value;
+  const amount = parseFloat(document.getElementById('bl-amt').value);
+  const ref    = document.getElementById('bl-ref').value.trim() || null;
+  const notes  = document.getElementById('bl-notes').value.trim() || null;
+  if (!pid||!date||!amount||amount<=0) { toast('Fill required fields','error'); return; }
+  const party  = APP.parties.find(p=>p.id===pid);
+  const { data, error } = await _sb.from('transactions')
+    .insert({ party_id:pid, salesman_id:party?.salesman_id||ME.id, date, type:'bill', amount, mode:'na', ref, notes, source:'manual' })
+    .select().single();
+  if (error) { toast(error.message,'error'); return; }
+  patchCache('txns', data, 'insert');
+  closeModal(); toast('Bill added');
+  if (partyId) navigate('partyDetail',{partyId}); else navigate('bills');
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — EDIT TRANSACTION
+// ════════════════════════════════════════════════════════════
+function showEditTxnModal(txnId) {
+  const t = APP.txns.find(x=>x.id===txnId); if (!t) return;
+  showModal(`
+    <h3 class="text-lg font-bold mb-4">Edit ${t.type==='bill'?'Bill':'Payment'}</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Date</label>
+        <input type="date" id="et-date" value="${t.date}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Amount</label>
+        <input type="number" id="et-amt" value="${t.amount}" step="1" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      ${t.type==='payment'?`<div><label class="text-xs text-gray-400 block mb-1">Mode</label>
+        <select id="et-mode" class="w-full border rounded-xl px-3 py-2 text-sm">
+          ${['cash','cheque','upi','na'].map(m=>`<option ${t.mode===m?'selected':''}>${m}</option>`).join('')}
+        </select></div>`:''}
+      <div><label class="text-xs text-gray-400 block mb-1">Ref</label>
+        <input type="text" id="et-ref" value="${t.ref||''}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Notes</label>
+        <input type="text" id="et-notes" value="${t.notes||''}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitEditTxn('${txnId}')" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Update</button>
+      </div>
+    </div>`);
+}
+
+async function submitEditTxn(txnId) {
+  const t      = APP.txns.find(x=>x.id===txnId); if (!t) return;
+  const date   = document.getElementById('et-date').value;
+  const amount = parseFloat(document.getElementById('et-amt').value);
+  const mode   = document.getElementById('et-mode')?.value || t.mode;
+  const ref    = document.getElementById('et-ref').value.trim() || null;
+  const notes  = document.getElementById('et-notes').value.trim() || null;
+  if (!date||!amount||amount<=0) { toast('Fill required fields','error'); return; }
+
+  const upd = { date, amount, mode, ref, notes, edited_by:ME.id, edited_at:new Date().toISOString() };
+  const logs = ['date','amount','ref','notes']
+    .filter(f => String(t[f]||'') !== String(upd[f]||''))
+    .map(f => ({ txn_id:txnId, changed_by:ME.id, field_changed:f, old_value:String(t[f]||''), new_value:String(upd[f]||'') }));
+
+  const { error } = await _sb.from('transactions').update(upd).eq('id',txnId);
+  if (error) { toast(error.message,'error'); return; }
+  if (logs.length) await _sb.from('edit_log').insert(logs);
+  patchCache('txns', { ...t, ...upd });
+  closeModal(); toast('Updated');
+  navigate(currentView, currentParams);
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — PARTY CRUD
+// ════════════════════════════════════════════════════════════
+function showAddPartyModal() {
+  const sms = APP.profiles.filter(p=>p.role==='salesman');
+  showModal(`
+    <h3 class="text-lg font-bold mb-4">Add Party</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Party Name</label>
+        <input type="text" id="ap-name" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">City</label>
+        <input type="text" id="ap-city" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Salesman</label>
+        <select id="ap-sm" class="w-full border rounded-xl px-3 py-2 text-sm">
+          ${sms.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}
+        </select></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitAddParty()" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Add</button>
+      </div>
+    </div>`);
+}
+
+async function submitAddParty() {
+  const name = document.getElementById('ap-name').value.trim();
+  const city = document.getElementById('ap-city').value.trim();
+  const sid  = document.getElementById('ap-sm').value;
+  if (!name) { toast('Enter party name','error'); return; }
+  const { data, error } = await _sb.from('parties').insert({ name, city, salesman_id:sid, status:'active' }).select().single();
+  if (error) { toast(error.message,'error'); return; }
+  patchCache('parties', data, 'insert');
+  closeModal(); toast('Party added'); navigate('parties');
+}
+
+function showEditPartyModal(partyId) {
+  const p   = APP.parties.find(x=>x.id===partyId);
+  const sms = APP.profiles.filter(pr=>pr.role==='salesman');
+  showModal(`
+    <h3 class="text-lg font-bold mb-4">Edit Party</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Name</label>
+        <input type="text" id="ep-name" value="${p.name}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">City</label>
+        <input type="text" id="ep-city" value="${p.city||''}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Salesman</label>
+        <select id="ep-sm" class="w-full border rounded-xl px-3 py-2 text-sm">
+          ${sms.map(s=>`<option value="${s.id}" ${p.salesman_id===s.id?'selected':''}>${s.name}</option>`).join('')}
+        </select></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Status</label>
+        <select id="ep-st" class="w-full border rounded-xl px-3 py-2 text-sm">
+          <option ${p.status==='active'?'selected':''}>active</option>
+          <option ${p.status==='inactive'?'selected':''}>inactive</option>
+        </select></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitEditParty('${partyId}')" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Update</button>
+      </div>
+    </div>`);
+}
+
+async function submitEditParty(partyId) {
+  const name = document.getElementById('ep-name').value.trim();
+  const city = document.getElementById('ep-city').value.trim();
+  const sid  = document.getElementById('ep-sm').value;
+  const st   = document.getElementById('ep-st').value;
+  if (!name) { toast('Enter name','error'); return; }
+  const { error } = await _sb.from('parties').update({ name, city, salesman_id:sid, status:st }).eq('id',partyId);
+  if (error) { toast(error.message,'error'); return; }
+  patchCache('parties', { id:partyId, name, city, salesman_id:sid, status:st });
+  closeModal(); toast('Updated'); navigate('parties');
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — USER CRUD
+// ════════════════════════════════════════════════════════════
+function showAddUserModal() {
+  showModal(`
+    <h3 class="text-lg font-bold mb-1">Add User</h3>
+    <p class="text-xs text-gray-400 mb-4">Requires Service Role Key in Settings. Default password: <code class="bg-gray-100 px-1 rounded">PBW@2026</code></p>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Name</label>
+        <input type="text" id="nu-name" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Mobile</label>
+        <input type="tel" id="nu-mobile" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Password</label>
+        <input type="text" id="nu-pw" value="PBW@2026" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Role</label>
+        <select id="nu-role" class="w-full border rounded-xl px-3 py-2 text-sm">
+          <option>salesman</option><option>admin</option>
+        </select></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitAddUser()" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Create</button>
+      </div>
+    </div>`);
+}
+
+async function submitAddUser() {
+  const name   = document.getElementById('nu-name').value.trim();
+  const mobile = document.getElementById('nu-mobile').value.trim();
+  const pw     = document.getElementById('nu-pw').value;
+  const role   = document.getElementById('nu-role').value;
+  if (!name||!mobile||!pw) { toast('Fill all fields','error'); return; }
+  if (!_adminSb) { toast('Set Service Role Key in Settings','error'); return; }
+
+  const { data, error } = await _adminSb.auth.admin.createUser({ email:mobileToEmail(mobile), password:pw, email_confirm:true });
+  if (error) { toast('Auth: '+error.message,'error'); return; }
+  const uid = data.user.id;
+  const { error:pe } = await _sb.from('profiles').insert({ id:uid, name, mobile, role, status:'active' });
+  if (pe) { toast('Profile: '+pe.message,'error'); return; }
+  patchCache('profiles', { id:uid, name, mobile, role, status:'active' }, 'insert');
+  closeModal(); toast('User created'); navigate('users');
+}
+
+function showEditUserModal(userId) {
+  const u = APP.profiles.find(p=>p.id===userId);
+  showModal(`
+    <h3 class="text-lg font-bold mb-4">Edit User — ${u.name}</h3>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Name</label>
+        <input type="text" id="eu-name" value="${u.name}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Mobile</label>
+        <input type="tel" id="eu-mobile" value="${u.mobile||''}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Status</label>
+        <select id="eu-st" class="w-full border rounded-xl px-3 py-2 text-sm">
+          <option ${u.status==='active'?'selected':''}>active</option>
+          <option ${u.status==='inactive'?'selected':''}>inactive</option>
+        </select></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitEditUser('${userId}')" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Update</button>
+      </div>
+    </div>`);
+}
+
+async function submitEditUser(userId) {
+  const name   = document.getElementById('eu-name').value.trim();
+  const mobile = document.getElementById('eu-mobile').value.trim();
+  const status = document.getElementById('eu-st').value;
+  const { error } = await _sb.from('profiles').update({ name, mobile, status }).eq('id',userId);
+  if (error) { toast(error.message,'error'); return; }
+  patchCache('profiles', { id:userId, name, mobile, status });
+  closeModal(); toast('Updated'); navigate('users');
+}
+
+// ════════════════════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════════════════════
+async function init() {
+  if (SUPABASE_URL === '__SUPABASE_URL__') {
+    document.getElementById('login-screen').innerHTML = `
+      <div class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-8 max-w-md text-center">
+          <h1 class="text-xl font-bold mb-3 text-amber-800">⚙️ Setup Required</h1>
+          <p class="text-sm text-gray-600 mb-3">Open <code class="bg-gray-100 px-1 rounded font-mono">index.html</code> in a text editor and replace:</p>
+          <pre class="text-xs bg-gray-100 rounded p-3 text-left mb-3">https://zcmyxledfeexuyqzmsxp.supabase.co/rest/v1/
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbXl4bGVkZmVleHV5cXptc3hwIiwicm9sZSI6ImFub24iLCJpYXQiOj</pre>
+          <p class="text-sm text-gray-500">with your Supabase project credentials.<br>See <code class="bg-gray-100 px-1 rounded">import-guide.md</code> for full setup.</p>
+        </div>
+      </div>`;
+    return;
+  }
+
+  initAdminSb();
+  const { data: { session } } = await _sb.auth.getSession();
+  if (session?.user) await afterLogin(session.user);
+
+  _sb.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_IN'  && session?.user && !ME) await afterLogin(session.user);
+    if (event === 'SIGNED_OUT') showLogin();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
