@@ -1376,8 +1376,10 @@ async function saveOpeningBalance(partyId) {
 // ════════════════════════════════════════════════════════════
 function showEditTxnModal(txnId) {
   const t = APP.txns.find(x=>x.id===txnId); if (!t) return;
+  const party = APP.parties.find(p=>p.id===t.party_id);
   showModal(`
-    <h3 class="text-lg font-bold mb-4">Edit ${t.type==='bill'?'Bill':'Payment'}</h3>
+    <h3 class="text-lg font-bold mb-1">Edit ${t.type==='bill'?'Bill':'Payment'}</h3>
+    <p class="text-xs text-gray-400 mb-4">${party?.name||''}</p>
     <div class="space-y-3">
       <div><label class="text-xs text-gray-400 block mb-1">Date</label>
         <input type="date" id="et-date" value="${t.date}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
@@ -1395,7 +1397,44 @@ function showEditTxnModal(txnId) {
         <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
         <button onclick="submitEditTxn('${txnId}')" class="flex-1 bg-blue-600 text-white rounded-2xl py-2.5 text-sm font-semibold">Update</button>
       </div>
+      ${ME.role==='admin' ? `
+      <div class="border-t pt-3 mt-1">
+        <button onclick="confirmDeleteTxn('${txnId}')"
+                class="w-full border border-red-300 text-red-500 rounded-2xl py-2.5 text-sm font-medium hover:bg-red-50 transition">
+          🗑 Delete this ${t.type==='bill'?'Bill':'Payment'}
+        </button>
+      </div>` : ''}
     </div>`);
+}
+
+function confirmDeleteTxn(txnId) {
+  const t = APP.txns.find(x=>x.id===txnId); if (!t) return;
+  const party = APP.parties.find(p=>p.id===t.party_id);
+  showModal(`
+    <div class="text-center">
+      <div class="text-4xl mb-3">⚠️</div>
+      <h3 class="text-lg font-bold mb-2 text-red-600">Delete ${t.type==='bill'?'Bill':'Payment'}?</h3>
+      <p class="text-sm text-gray-600 mb-1">${party?.name||''}</p>
+      <p class="text-sm text-gray-500 mb-1">${fmtDate(t.date)} &nbsp;|&nbsp; <b>${rupees(t.amount)}</b></p>
+      ${t.ref ? `<p class="text-xs text-gray-400 mb-4">Ref: ${t.ref}</p>` : '<p class="mb-4"></p>'}
+      <p class="text-sm text-red-500 font-medium mb-4">This cannot be undone.</p>
+      <div class="flex gap-2">
+        <button onclick="showEditTxnModal('${txnId}')" class="flex-1 border rounded-2xl py-2.5 text-sm">← Back</button>
+        <button onclick="deleteTxn('${txnId}')" class="flex-1 bg-red-600 text-white rounded-2xl py-2.5 text-sm font-semibold hover:bg-red-700">
+          Yes, Delete
+        </button>
+      </div>
+    </div>`);
+}
+
+async function deleteTxn(txnId) {
+  const t = APP.txns.find(x=>x.id===txnId); if (!t) return;
+  const { error } = await _sb.from('transactions').delete().eq('id', txnId);
+  if (error) { toast('Delete failed: '+error.message, 'error'); return; }
+  APP.txns = APP.txns.filter(x=>x.id!==txnId);
+  closeModal();
+  toast(`${t.type==='bill'?'Bill':'Payment'} deleted ✓`);
+  navigate(currentView, currentParams);
 }
 
 async function submitEditTxn(txnId) {
