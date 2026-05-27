@@ -475,8 +475,14 @@ reg('verify', () => `
       <input  id="vf-to"   type="date" onchange="renderVerifyRows()" class="border rounded-lg px-2 py-1.5 text-sm">
       <select id="vf-mode" onchange="renderVerifyRows()" class="border rounded-lg px-2 py-1.5 text-sm">
         <option value="">All Modes</option>
-        <option>cash</option><option>cheque</option><option>upi</option>
+        <option>cash</option><option>cheque</option><option>upi</option><option>discount</option>
       </select>
+    </div>
+    <!-- Total bar -->
+    <div class="bg-blue-50 border border-blue-100 rounded-xl px-4 py-2 mb-3 flex flex-wrap gap-4 text-sm text-blue-800">
+      <span>Unverified: <b id="vf-count">—</b> payments</span>
+      <span>|</span>
+      <span>Total Amount: <b id="vf-total" class="text-blue-900 text-base">—</b></span>
     </div>
     <div class="bg-white rounded-2xl shadow overflow-x-auto">
       <table class="w-full text-sm">
@@ -485,8 +491,8 @@ reg('verify', () => `
             <th class="px-3 py-3"><input type="checkbox" id="vf-all" onchange="toggleAllVerify(this.checked)"></th>
             <th class="px-4 py-3 text-left">Date</th>
             <th class="px-4 py-3 text-left">Party</th>
-            <th class="px-4 py-3 text-left">Salesman</th>
             <th class="px-4 py-3 text-right">Amount</th>
+            <th class="px-4 py-3 text-left">Salesman</th>
             <th class="px-4 py-3 text-left">Mode</th>
             <th class="px-4 py-3 text-left">Ref</th>
             <th class="px-4 py-3"></th>
@@ -513,6 +519,11 @@ function renderVerifyRows() {
 
   const tbody = document.getElementById('verify-tbody');
   if (!tbody) return;
+  // Update total bar
+  const total = rows.reduce((s,t)=>s+(+t.amount),0);
+  const cntEl = document.getElementById('vf-count'); if(cntEl) cntEl.textContent = rows.length;
+  const totEl = document.getElementById('vf-total'); if(totEl) totEl.textContent = rupees(total);
+
   tbody.innerHTML = rows.length ? rows.map(t => {
     const party = APP.parties.find(p => p.id===t.party_id);
     const sm    = APP.profiles.find(p => p.id===(party?.salesman_id));
@@ -520,8 +531,8 @@ function renderVerifyRows() {
       <td class="px-3 py-3"><input type="checkbox" class="vcb" data-id="${t.id}" onchange="updVerifyCount()"></td>
       <td class="px-4 py-3">${fmtDate(t.date)}</td>
       <td class="px-4 py-3 font-medium">${party?.name||'—'}</td>
-      <td class="px-4 py-3 text-gray-500">${sm?.name||'—'}</td>
       <td class="px-4 py-3 text-right font-semibold text-green-700">${rupees(t.amount)}</td>
+      <td class="px-4 py-3 text-gray-500">${sm?.name||'—'}</td>
       <td class="px-4 py-3">${modeBadge(t.mode)}</td>
       <td class="px-4 py-3 text-gray-400 text-xs">${t.ref||'—'}</td>
       <td class="px-4 py-3">
@@ -669,11 +680,11 @@ reg('parties', () => {
         data-out="${out}">
       <td class="px-4 py-3 font-medium text-blue-600 cursor-pointer hover:underline"
           onclick="navigate('partyLedger',{partyId:'${p.id}'})">${p.name}</td>
-      <td class="px-4 py-3 text-gray-500 text-sm">${sm?.name||'—'}</td>
+      <td class="px-4 py-3 text-right font-semibold ${out>0?'text-gray-900':'text-gray-300'}">${rupees(out)}</td>
       <td class="px-4 py-3 text-sm ${unpaid15?'text-red-500 font-semibold':'text-gray-500'}">
         ${lastPmt ? fmtDate(lastPmt)+` <span class="text-xs">(${daysSince}d ago)</span>` : '<span class="text-red-400">Never</span>'}
       </td>
-      <td class="px-4 py-3 text-right font-semibold ${out>0?'text-gray-900':'text-gray-300'}">${rupees(out)}</td>
+      <td class="px-4 py-3 text-gray-500 text-sm">${sm?.name||'—'}</td>
       <td class="px-4 py-3"><button onclick="showEditPartyModal('${p.id}')" class="text-xs text-blue-500 hover:underline">Edit</button></td>
     </tr>`).join('');
 
@@ -711,9 +722,9 @@ reg('parties', () => {
         <thead class="bg-gray-50 text-xs uppercase text-gray-500">
           <tr>
             <th class="px-4 py-3 text-left">Party Name</th>
-            <th class="px-4 py-3 text-left">Salesman</th>
-            <th class="px-4 py-3 text-left">Last Payment</th>
             <th class="px-4 py-3 text-right">Outstanding</th>
+            <th class="px-4 py-3 text-left">Last Payment</th>
+            <th class="px-4 py-3 text-left">Salesman</th>
             <th class="px-4 py-3"></th>
           </tr>
         </thead>
