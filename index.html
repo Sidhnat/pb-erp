@@ -281,7 +281,8 @@ function renderNav() {
     { n:'import',    l:'Import' },
     { n:'settings',  l:'Settings' },
   ] : [
-    { n:'partyList', l:'My Parties' },
+    { n:'smDashboard', l:'Dashboard' },
+    { n:'partyList',   l:'My Parties' },
   ];
   const unv = isAdmin ? APP.txns.filter(t => t.type==='payment' && !t.verified).length : 0;
 
@@ -334,7 +335,7 @@ function showApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app-shell').classList.remove('hidden');
   if (ME.role === 'admin') navigate('dashboard');
-  else navigate('partyList');
+  else navigate('smDashboard');
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1078,6 +1079,120 @@ async function confirmLedgers() {
   p.innerHTML = `<span class="text-green-600 font-medium">✓ ${obB.length} opening balances · ${txnB.length} transactions imported.</span>
     ${unm.length?`<br><span class="text-yellow-600">⚠️ ${unm.length} unmatched: ${unm.slice(0,5).join(', ')}${unm.length>5?'…':''} (run Step 1 first)</span>`:''}`;
 }
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: SALESMAN — DASHBOARD
+// ════════════════════════════════════════════════════════════
+reg('smDashboard', () => {
+  const myPts   = APP.parties.filter(p => p.salesman_id === ME.id);
+  const pids    = new Set(myPts.map(p => p.id));
+  const myTxns  = APP.txns.filter(t => pids.has(t.party_id));
+
+  // Totals
+  const todayStr = today();
+  const fom      = firstOfMonth();
+  const todayColl = myTxns.filter(t=>t.type==='payment'&&t.date===todayStr).reduce((s,t)=>s+(+t.amount),0);
+  const mtdColl   = myTxns.filter(t=>t.type==='payment'&&t.date>=fom).reduce((s,t)=>s+(+t.amount),0);
+
+  // Aging totals across all my parties
+  const aging = myPts.reduce((acc,p)=>{
+    const a = calcAging(p.id);
+    acc.b0  += a.b0; acc.b31 += a.b31; acc.b61 += a.b61; acc.b90 += a.b90; acc.total += a.total;
+    return acc;
+  }, {b0:0, b31:0, b61:0, b90:0, total:0});
+
+  // Top 5 parties by outstanding (with balance)
+  const topParties = myPts
+    .map(p => ({ p, out: getOutstanding(p.id) }))
+    .filter(x => x.out > 0)
+    .sort((a,b) => b.out - a.out)
+    .slice(0, 5);
+
+  // Recent 5 payments
+  const recentPmts = myTxns
+    .filter(t => t.type==='payment')
+    .sort((a,b) => b.date.localeCompare(a.date) || b.created_at?.localeCompare(a.created_at||'')||0)
+    .slice(0, 5);
+
+  return `
+  <div class="max-w-2xl mx-auto pb-6">
+    <h2 class="text-xl font-bold mb-4">My Dashboard — ${ME.name}</h2>
+
+    <!-- KPI Cards -->
+    <div class="grid grid-cols-3 gap-3 mb-5">
+      <div class="bg-white rounded-2xl shadow p-4 text-center">
+        <p class="text-xs text-gray-400 mb-1">Total Outstanding</p>
+        <p class="text-lg font-bold text-blue-700">${rupees(aging.total)}</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow p-4 text-center">
+        <p class="text-xs text-gray-400 mb-1">Today Collected</p>
+        <p class="text-lg font-bold text-green-600">${rupees(todayColl)}</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow p-4 text-center">
+        <p class="text-xs text-gray-400 mb-1">This Month</p>
+        <p class="text-lg font-bold text-green-700">${rupees(mtdColl)}</p>
+      </div>
+    </div>
+
+    <!-- Aging Breakdown -->
+    <h3 class="text-sm font-semibold text-gray-500 uppercase mb-2">Aging Breakdown</h3>
+    <div class="grid grid-cols-4 gap-2 mb-5">
+      <div class="bg-green-50 rounded-2xl p-3 text-center">
+        <p class="text-xs text-green-600 font-medium mb-1">0–30 days</p>
+        <p class="text-base font-bold text-green-700">${rupees(aging.b0)}</p>
+      </div>
+      <div class="bg-yellow-50 rounded-2xl p-3 text-center">
+        <p class="text-xs text-yellow-600 font-medium mb-1">31–60 days</p>
+        <p class="text-base font-bold text-yellow-700">${rupees(aging.b31)}</p>
+      </div>
+      <div class="bg-orange-50 rounded-2xl p-3 text-center">
+        <p class="text-xs text-orange-600 font-medium mb-1">61–90 days</p>
+        <p class="text-base font-bold text-orange-700">${rupees(aging.b61)}</p>
+      </div>
+      <div class="bg-red-50 rounded-2xl p-3 text-center">
+        <p class="text-xs text-red-500 font-medium mb-1">90+ days</p>
+        <p class="text-base font-bold text-red-600">${rupees(aging.b90)}</p>
+      </div>
+    </div>
+
+    <!-- Top parties to follow up -->
+    ${topParties.length ? `
+    <h3 class="text-sm font-semibold text-gray-500 uppercase mb-2">Top Outstanding Parties</h3>
+    <div class="bg-white rounded-2xl shadow overflow-hidden mb-5">
+      ${topParties.map(({p,out},i)=>`
+      <div class="flex items-center justify-between px-4 py-3 ${i>0?'border-t':''}
+                  cursor-pointer hover:bg-gray-50" onclick="navigate('partyDetail',{partyId:'${p.id}'})">
+        <div>
+          <p class="font-semibold text-sm text-gray-900">${p.name}</p>
+          ${p.city?`<p class="text-xs text-gray-400">${p.city}</p>`:''}
+        </div>
+        <div class="text-right">
+          <p class="font-bold text-gray-800">${rupees(out)}</p>
+          <button onclick="event.stopPropagation();showRecordPaymentModal('${p.id}')"
+                  class="text-xs bg-green-600 text-white px-3 py-1 rounded-lg mt-1 hover:bg-green-700">
+            💰 Collect
+          </button>
+        </div>
+      </div>`).join('')}
+    </div>` : ''}
+
+    <!-- Recent Payments -->
+    ${recentPmts.length ? `
+    <h3 class="text-sm font-semibold text-gray-500 uppercase mb-2">Recent Collections</h3>
+    <div class="bg-white rounded-2xl shadow overflow-hidden">
+      ${recentPmts.map((t,i)=>{
+        const pname = APP.parties.find(p=>p.id===t.party_id)?.name||'—';
+        return `<div class="flex items-center justify-between px-4 py-3 ${i>0?'border-t':''}">
+          <div>
+            <p class="text-sm font-medium text-gray-800">${pname}</p>
+            <p class="text-xs text-gray-400">${fmtDate(t.date)} · ${t.mode==='discount'?'Discount':t.mode||'—'}</p>
+          </div>
+          <p class="font-bold ${t.mode==='discount'?'text-yellow-600':'text-green-600'}">${rupees(t.amount)}</p>
+        </div>`;
+      }).join('')}
+    </div>` : '<p class="text-center text-gray-400 text-sm py-6">No payments recorded yet</p>'}
+  </div>`;
+});
 
 // ════════════════════════════════════════════════════════════
 //  VIEW: SALESMAN — PARTY LIST
