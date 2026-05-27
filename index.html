@@ -1104,19 +1104,24 @@ function partyCard(p) {
     ag.b90 > 0 ? `<span class="px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">🔴 ${rupees(ag.b90)}</span>`     : '',
   ].filter(Boolean).join('');
   return `
-  <div class="bg-white rounded-2xl shadow p-4 cursor-pointer hover:shadow-md active:shadow-sm transition pcard"
-       data-name="${p.name.toLowerCase()}" onclick="navigate('partyDetail',{partyId:'${p.id}'})">
-    <div class="flex justify-between items-start mb-2">
+  <div class="bg-white rounded-2xl shadow p-4 pcard" data-name="${p.name.toLowerCase()}">
+    <div class="flex justify-between items-start mb-2" onclick="navigate('partyDetail',{partyId:'${p.id}'})" style="cursor:pointer">
       <div>
         <p class="font-bold text-gray-900 leading-tight">${p.name}</p>
         ${p.city?`<p class="text-xs text-gray-400">${p.city}</p>`:''}
       </div>
       <p class="text-xl font-bold text-gray-900 ml-2">${rupees(ag.total)}</p>
     </div>
-    ${chips ? `<div class="flex gap-1 flex-wrap mb-2">${chips}</div>` : ''}
-    <div class="flex gap-4 text-xs text-gray-400">
-      <span>Bill: ${fmtDate(getLastDate(p.id,'bill'))}</span>
-      <span>Pmt: ${fmtDate(getLastDate(p.id,'payment'))}</span>
+    ${chips ? `<div class="flex gap-1 flex-wrap mb-2" onclick="navigate('partyDetail',{partyId:'${p.id}'})" style="cursor:pointer">${chips}</div>` : ''}
+    <div class="flex items-center justify-between mt-2">
+      <div class="flex gap-4 text-xs text-gray-400">
+        <span>Bill: ${fmtDate(getLastDate(p.id,'bill'))}</span>
+        <span>Pmt: ${fmtDate(getLastDate(p.id,'payment'))}</span>
+      </div>
+      <button onclick="event.stopPropagation();showRecordPaymentModal('${p.id}')"
+              class="bg-green-600 text-white text-xs font-semibold px-4 py-1.5 rounded-xl hover:bg-green-700 active:bg-green-800 transition">
+        💰 Collect
+      </button>
     </div>
   </div>`;
 }
@@ -1222,13 +1227,23 @@ function switchTab(idx, btn) {
 // ════════════════════════════════════════════════════════════
 function showRecordPaymentModal(partyId) {
   const party = APP.parties.find(p=>p.id===partyId);
+  const out   = getOutstanding(partyId);
   showModal(`
-    <h3 class="text-lg font-bold mb-4">Record Payment — ${party?.name}</h3>
+    <h3 class="text-lg font-bold mb-1">Record Payment</h3>
+    <p class="text-sm text-gray-500 mb-1">${party?.name}</p>
+    <p class="text-xs text-gray-400 mb-4">Outstanding: <b class="text-gray-700">${rupees(out)}</b></p>
     <div class="space-y-3">
       <div><label class="text-xs text-gray-400 block mb-1">Date</label>
         <input type="date" id="pm-date" value="${today()}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
-      <div><label class="text-xs text-gray-400 block mb-1">Amount (₹)</label>
-        <input type="number" id="pm-amt" placeholder="0" step="1" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Amount Collected (₹) *</label>
+        <input type="number" id="pm-amt" placeholder="0" step="1" oninput="updatePmTotal()"
+               class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Discount Given (₹)</label>
+        <input type="number" id="pm-disc" placeholder="0" step="1" value="0" oninput="updatePmTotal()"
+               class="w-full border rounded-xl px-3 py-2 text-sm bg-yellow-50"></div>
+      <div id="pm-total-row" class="hidden bg-green-50 rounded-xl px-3 py-2 text-sm text-green-800 font-semibold">
+        Total deduction from outstanding: <span id="pm-total-lbl">₹0</span>
+      </div>
       <div><label class="text-xs text-gray-400 block mb-1">Mode</label>
         <select id="pm-mode" onchange="toggleRef()" class="w-full border rounded-xl px-3 py-2 text-sm">
           <option value="cash">Cash</option>
@@ -1247,6 +1262,18 @@ function showRecordPaymentModal(partyId) {
   toggleRef();
 }
 
+function updatePmTotal() {
+  const amt  = parseFloat(document.getElementById('pm-amt')?.value)||0;
+  const disc = parseFloat(document.getElementById('pm-disc')?.value)||0;
+  const row  = document.getElementById('pm-total-row');
+  const lbl  = document.getElementById('pm-total-lbl');
+  if (row && lbl) {
+    const total = amt + disc;
+    row.classList.toggle('hidden', total===0);
+    lbl.textContent = rupees(total);
+  }
+}
+
 function toggleRef() {
   const m = document.getElementById('pm-mode')?.value;
   const g = document.getElementById('pm-ref-group');
@@ -1256,24 +1283,36 @@ function toggleRef() {
 async function submitPayment(partyId) {
   const date   = document.getElementById('pm-date').value;
   const amount = parseFloat(document.getElementById('pm-amt').value);
+  const disc   = parseFloat(document.getElementById('pm-disc')?.value)||0;
   const mode   = document.getElementById('pm-mode').value;
   const ref    = document.getElementById('pm-ref')?.value.trim() || null;
   const notes  = document.getElementById('pm-notes').value.trim() || null;
-  if (!date || !amount || amount<=0) { toast('Enter valid date & amount','error'); return; }
+  if (!date) { toast('Enter a date','error'); return; }
+  if (amount<=0 && disc<=0) { toast('Enter amount or discount','error'); return; }
 
-  const party  = APP.parties.find(p=>p.id===partyId);
-  const newTxn = { party_id:partyId, salesman_id:party?.salesman_id||ME.id, date, type:'payment', amount, mode, ref, notes, source:'manual', verified:false };
+  const party   = APP.parties.find(p=>p.id===partyId);
+  const smId    = party?.salesman_id||ME.id;
+  const inserts = [];
 
-  // Optimistic
-  const tmp = 'tmp_'+Date.now();
-  APP.txns.push({ ...newTxn, id:tmp, created_at:new Date().toISOString() });
+  // Main payment (only if amount > 0)
+  if (amount > 0) {
+    inserts.push({ party_id:partyId, salesman_id:smId, date, type:'payment', amount, mode, ref, notes, source:'manual', verified:false });
+  }
+
+  // Discount entry (if any)
+  if (disc > 0) {
+    inserts.push({ party_id:partyId, salesman_id:smId, date, type:'payment', amount:disc, mode:'discount', ref:null, notes:notes||'Discount', source:'manual', verified:false });
+  }
+
+  // Optimistic update
+  const tmps = inserts.map(txn => { const t={...txn,id:'tmp_'+Date.now()+'_'+Math.random(),created_at:new Date().toISOString()}; APP.txns.push(t); return t; });
   closeModal();
   navigate(currentView, currentParams);
-  toast('Payment recorded');
+  toast(amount>0 && disc>0 ? `Payment + ₹${disc} discount recorded` : disc>0 && amount<=0 ? `Discount of ₹${disc} recorded` : 'Payment recorded');
 
-  const { data, error } = await _sb.from('transactions').insert(newTxn).select().single();
-  if (error) { APP.txns = APP.txns.filter(t=>t.id!==tmp); toast('Save failed: '+error.message,'error'); return; }
-  const i = APP.txns.findIndex(t=>t.id===tmp); if (i>=0) APP.txns[i] = data;
+  const { data, error } = await _sb.from('transactions').insert(inserts).select();
+  if (error) { tmps.forEach(t=>{ APP.txns=APP.txns.filter(x=>x.id!==t.id); }); toast('Save failed: '+error.message,'error'); return; }
+  tmps.forEach((t,i)=>{ const idx=APP.txns.findIndex(x=>x.id===t.id); if(idx>=0&&data[i]) APP.txns[idx]=data[i]; });
   renderNav();
 }
 
