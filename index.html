@@ -641,42 +641,117 @@ reg('partyLedger', ({ partyId }) => {
 // ════════════════════════════════════════════════════════════
 //  VIEW: PARTIES
 // ════════════════════════════════════════════════════════════
-reg('parties', () => `
+let _pfUnpaid = false;
+
+reg('parties', () => {
+  _pfUnpaid = false;
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate()-15);
+  const cutoffStr = cutoff.toISOString().slice(0,10);
+
+  const salesmen = APP.profiles.filter(p=>p.role==='salesman').sort((a,b)=>a.name.localeCompare(b.name));
+
+  const rows = APP.parties.map(p => {
+    const sm       = APP.profiles.find(pr=>pr.id===p.salesman_id);
+    const out      = getOutstanding(p.id);
+    const pmts     = APP.txns.filter(t=>t.party_id===p.id&&t.type==='payment');
+    const lastPmt  = pmts.length ? pmts.reduce((a,c)=>a.date>c.date?a:c).date : null;
+    const daysSince= lastPmt ? Math.floor((new Date()-new Date(lastPmt))/86400000) : 999;
+    const unpaid15 = !lastPmt || lastPmt < cutoffStr;
+    return { p, sm, out, lastPmt, daysSince, unpaid15 };
+  });
+
+  const rowsHtml = rows.map(({p,sm,out,lastPmt,daysSince,unpaid15})=>`
+    <tr class="border-t hover:bg-gray-50 prow"
+        data-name="${p.name.toLowerCase()}"
+        data-sm="${p.salesman_id||''}"
+        data-unpaid="${unpaid15?'1':'0'}"
+        data-out="${out}">
+      <td class="px-4 py-3 font-medium text-blue-600 cursor-pointer hover:underline"
+          onclick="navigate('partyLedger',{partyId:'${p.id}'})">${p.name}</td>
+      <td class="px-4 py-3 text-gray-500 text-sm">${sm?.name||'—'}</td>
+      <td class="px-4 py-3 text-sm ${unpaid15?'text-red-500 font-semibold':'text-gray-500'}">
+        ${lastPmt ? fmtDate(lastPmt)+` <span class="text-xs">(${daysSince}d ago)</span>` : '<span class="text-red-400">Never</span>'}
+      </td>
+      <td class="px-4 py-3 text-right font-semibold ${out>0?'text-gray-900':'text-gray-300'}">${rupees(out)}</td>
+      <td class="px-4 py-3"><button onclick="showEditPartyModal('${p.id}')" class="text-xs text-blue-500 hover:underline">Edit</button></td>
+    </tr>`).join('');
+
+  return `
   <div class="max-w-5xl mx-auto">
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-2xl font-bold">Parties <span class="text-gray-400 text-lg">(${APP.parties.length})</span></h2>
+      <h2 class="text-2xl font-bold">Parties</h2>
       <button onclick="showAddPartyModal()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700">+ Add Party</button>
     </div>
-    <input type="text" placeholder="Search party…" oninput="filterRows(this,'party-row')"
-           class="w-full border rounded-xl px-3 py-2 mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+
+    <!-- Filters -->
+    <div class="flex flex-wrap gap-2 mb-3">
+      <input id="pf-search" type="text" placeholder="🔍 Search party…" oninput="filterParties()"
+             class="flex-1 min-w-[160px] border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+      <select id="pf-sm" onchange="filterParties()"
+              class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+        <option value="">All Salesmen</option>
+        ${salesmen.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}
+      </select>
+      <button id="pf-unpaid-btn" onclick="togglePfUnpaid()"
+              class="border rounded-xl px-3 py-2 text-sm font-medium text-gray-600 hover:bg-red-50 hover:border-red-300 hover:text-red-600 transition">
+        ⏰ Not paid 15+ days
+      </button>
+    </div>
+
+    <!-- Summary bar -->
+    <div class="bg-blue-50 rounded-xl px-4 py-2 mb-3 flex flex-wrap gap-4 text-sm text-blue-800">
+      <span>Showing: <b id="pf-count">—</b> parties</span>
+      <span>|</span>
+      <span>Total Outstanding: <b id="pf-total" class="text-blue-900">—</b></span>
+    </div>
+
     <div class="bg-white rounded-2xl shadow overflow-x-auto">
       <table class="w-full text-sm">
         <thead class="bg-gray-50 text-xs uppercase text-gray-500">
           <tr>
-            <th class="px-4 py-3 text-left">Party</th>
-            <th class="px-4 py-3 text-left">City</th>
+            <th class="px-4 py-3 text-left">Party Name</th>
             <th class="px-4 py-3 text-left">Salesman</th>
+            <th class="px-4 py-3 text-left">Last Payment</th>
             <th class="px-4 py-3 text-right">Outstanding</th>
             <th class="px-4 py-3"></th>
           </tr>
         </thead>
-        <tbody>
-          ${APP.parties.map(p=>{
-            const sm = APP.profiles.find(pr=>pr.id===p.salesman_id);
-            return `<tr class="border-t hover:bg-gray-50 party-row" data-name="${p.name.toLowerCase()}">
-              <td class="px-4 py-3 font-medium text-blue-600 cursor-pointer hover:underline"
-                  onclick="navigate('partyLedger',{partyId:'${p.id}'})">${p.name}</td>
-              <td class="px-4 py-3 text-gray-400">${p.city||'—'}</td>
-              <td class="px-4 py-3">${sm?.name||'—'}</td>
-              <td class="px-4 py-3 text-right font-semibold">${rupees(getOutstanding(p.id))}</td>
-              <td class="px-4 py-3"><button onclick="showEditPartyModal('${p.id}')" class="text-xs text-blue-500 hover:underline">Edit</button></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
+        <tbody id="parties-tbody">${rowsHtml}</tbody>
       </table>
     </div>
-  </div>`
-);
+  </div>`;
+});
+
+function filterParties() {
+  const q    = (document.getElementById('pf-search')?.value||'').toLowerCase();
+  const smId = document.getElementById('pf-sm')?.value||'';
+  const rows = document.querySelectorAll('#parties-tbody .prow');
+  let count=0, total=0;
+  rows.forEach(r=>{
+    const nameMatch = !q || r.dataset.name.includes(q);
+    const smMatch   = !smId || r.dataset.sm===smId;
+    const unpMatch  = !_pfUnpaid || r.dataset.unpaid==='1';
+    const show = nameMatch && smMatch && unpMatch;
+    r.style.display = show ? '' : 'none';
+    if (show) { count++; total += parseFloat(r.dataset.out)||0; }
+  });
+  const el = document.getElementById('pf-count'); if(el) el.textContent=count;
+  const tl = document.getElementById('pf-total'); if(tl) tl.textContent=rupees(total);
+}
+
+function togglePfUnpaid() {
+  _pfUnpaid = !_pfUnpaid;
+  const btn = document.getElementById('pf-unpaid-btn');
+  if(btn) {
+    btn.className = _pfUnpaid
+      ? 'border border-red-400 rounded-xl px-3 py-2 text-sm font-medium bg-red-50 text-red-600'
+      : 'border rounded-xl px-3 py-2 text-sm font-medium text-gray-600 hover:bg-red-50 hover:border-red-300 hover:text-red-600 transition';
+  }
+  filterParties();
+}
+
+// Run filter once on load to populate count/total
+setTimeout(filterParties, 50);
 
 // ════════════════════════════════════════════════════════════
 //  VIEW: USERS
