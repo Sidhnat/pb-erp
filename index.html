@@ -171,9 +171,20 @@ function daysDiff(from, to) {
 
 function calcAging(partyId) {
   const today = new Date(); today.setHours(0,0,0,0);
-  const ob = APP.openings.find(o => o.party_id === partyId && o.as_on_date === FY_START)
-          || { amt_0_30:0, amt_31_60:0, amt_61_90:0, amt_90_plus:0 };
-  let b = { b0:+ob.amt_0_30, b31:+ob.amt_31_60, b61:+ob.amt_61_90, b90:+ob.amt_90_plus };
+  const ob = APP.openings.find(o => o.party_id === partyId && o.as_on_date === FY_START);
+  let b = { b0:0, b31:0, b61:0, b90:0 };
+
+  // Opening balance aged from FY_START (April 1 = 0 days old on that date)
+  if (ob) {
+    const obTotal = (+ob.amt_90_plus) + (+ob.amt_61_90) + (+ob.amt_31_60) + (+ob.amt_0_30);
+    if (obTotal > 0) {
+      const obAge = daysDiff(today, new Date(FY_START));
+      if      (obAge <= 30) b.b0  += obTotal;
+      else if (obAge <= 60) b.b31 += obTotal;
+      else if (obAge <= 90) b.b61 += obTotal;
+      else                  b.b90 += obTotal;
+    }
+  }
 
   APP.txns
     .filter(t => t.party_id === partyId)
@@ -937,6 +948,7 @@ function parseLedger(rows) {
     if (ds.toLowerCase().includes('balance b/f') || ds.toLowerCase().includes('opening')) {
       cur.opening = parseFloat(debit)||parseFloat(credit)||0; continue;
     }
+    if (ds.toLowerCase().includes('balance c/f') || ds.toLowerCase().includes('closing balance')) continue;
     if (ds.toUpperCase().includes('SALES') && debit)
       cur.txns.push({ date:iso, type:'bill', amount:parseFloat(debit), ref:String(ref||'').trim() });
     else if (credit) {
@@ -1118,6 +1130,7 @@ reg('partyDetail', ({ partyId }) => {
         Record Payment
       </button>
       ${ME.role==='admin'?`<button onclick="showAddBillModal('${partyId}')" class="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm hover:bg-blue-700">Add Bill</button>`:''}
+      ${ME.role==='admin'?`<button onclick="showEditOpeningModal('${partyId}')" class="bg-gray-200 text-gray-700 px-4 py-3 rounded-2xl font-semibold text-sm hover:bg-gray-300">✏️ Opening</button>`:''}
     </div>
   </div>`;
 });
@@ -1231,6 +1244,56 @@ async function submitBill(partyId) {
   patchCache('txns', data, 'insert');
   closeModal(); toast('Bill added');
   if (partyId) navigate('partyDetail',{partyId}); else navigate('bills');
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — EDIT OPENING BALANCE
+// ════════════════════════════════════════════════════════════
+function showEditOpeningModal(partyId) {
+  const party = APP.parties.find(p=>p.id===partyId);
+  const ob    = APP.openings.find(o=>o.party_id===partyId && o.as_on_date===FY_START);
+  const cur   = ob ? +ob.amt_90_plus : 0;
+  showModal(`
+    <h3 class="text-lg font-bold mb-1">Edit Opening Balance</h3>
+    <p class="text-sm text-gray-500 mb-4">${party?.name} — as on ${FY_START}</p>
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-500">Current Opening Balance</label>
+        <p class="font-semibold text-gray-700">${rupees(cur)}</p>
+      </div>
+      <div>
+        <label class="text-xs text-gray-500">New Opening Balance (₹) *</label>
+        <input id="ob-amount" type="number" min="0" step="0.01" value="${cur}"
+               class="w-full border rounded-xl px-3 py-2 text-sm mt-1 focus:outline-none focus:ring-2 focus:ring-blue-300">
+      </div>
+      <button onclick="saveOpeningBalance('${partyId}')"
+              class="w-full bg-blue-600 text-white py-3 rounded-xl text-sm font-semibold hover:bg-blue-700">
+        Save Opening Balance
+      </button>
+    </div>`);
+}
+
+async function saveOpeningBalance(partyId) {
+  const amount = parseFloat(document.getElementById('ob-amount').value);
+  if (isNaN(amount) || amount < 0) { toast('Enter a valid amount','error'); return; }
+  const ob = APP.openings.find(o=>o.party_id===partyId && o.as_on_date===FY_START);
+  let result;
+  if (ob) {
+    result = await _sb.from('opening_balances')
+      .update({ amt_90_plus: amount, total: amount })
+      .eq('party_id', partyId).eq('as_on_date', FY_START)
+      .select().single();
+  } else {
+    result = await _sb.from('opening_balances')
+      .insert({ party_id: partyId, as_on_date: FY_START, amt_0_30:0, amt_31_60:0, amt_61_90:0, amt_90_plus: amount, total: amount })
+      .select().single();
+  }
+  if (result.error) { toast(result.error.message,'error'); return; }
+  // Update local cache
+  const idx = APP.openings.findIndex(o=>o.party_id===partyId && o.as_on_date===FY_START);
+  if (idx>=0) APP.openings[idx] = result.data; else APP.openings.push(result.data);
+  closeModal(); toast('Opening balance updated ✓');
+  navigate('partyDetail',{partyId});
 }
 
 // ════════════════════════════════════════════════════════════
