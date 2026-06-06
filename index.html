@@ -224,8 +224,9 @@ function getLedger(partyId) {
     .filter(t => t.party_id === partyId)
     .sort((a,c) => new Date(a.date) - new Date(c.date))
     .forEach(t => {
-      if (t.type === 'bill')    { bal += +t.amount; rows.push({ ...t, label:'Bill',    debit:+t.amount, credit:0,        balance:bal }); }
-      else                      { bal -= +t.amount; rows.push({ ...t, label:'Payment', debit:0,         credit:+t.amount, balance:bal }); }
+      if (t.type === 'bill')           { bal += +t.amount; rows.push({ ...t, label:'Bill',        debit:+t.amount, credit:0,         balance:bal }); }
+      else if (t.type==='credit_note') { bal -= +t.amount; rows.push({ ...t, label:'Credit Note', debit:0,          credit:+t.amount, balance:bal }); }
+      else                             { bal -= +t.amount; rows.push({ ...t, label:'Payment',     debit:0,          credit:+t.amount, balance:bal }); }
     });
   return rows;
 }
@@ -245,7 +246,7 @@ function firstOfMonth() {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
 }
 function modeBadge(mode) {
-  const map = { cash:'bg-green-100 text-green-800', cheque:'bg-blue-100 text-blue-800', upi:'bg-purple-100 text-purple-800' };
+  const map = { cash:'bg-green-100 text-green-800', cheque:'bg-blue-100 text-blue-800', upi:'bg-purple-100 text-purple-800', discount:'bg-yellow-100 text-yellow-800' };
   return `<span class="px-2 py-0.5 rounded text-xs font-medium ${map[mode]||'bg-gray-100 text-gray-600'}">${mode||'na'}</span>`;
 }
 
@@ -265,6 +266,7 @@ function navigate(name, params = {}) {
   renderNav();
   window.scrollTo(0, 0);
   if (name === 'verify') setTimeout(renderVerifyRows, 20);
+  if (name === 'sales')  setTimeout(renderSalesTable, 20);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -277,6 +279,7 @@ function renderNav() {
     { n:'bills',     l:'Bills' },
     { n:'verify',    l:'Verify' },
     { n:'parties',   l:'Parties' },
+    { n:'sales',     l:'Sales' },
     { n:'users',     l:'Users' },
     { n:'import',    l:'Import' },
     { n:'settings',  l:'Settings' },
@@ -347,31 +350,39 @@ reg('dashboard', () => {
   const todayColl  = APP.txns.filter(t => t.type==='payment' && t.date===todayStr).reduce((s,t) => s + +t.amount, 0);
   const unv        = APP.txns.filter(t => t.type==='payment' && !t.verified).length;
   const fom        = firstOfMonth();
+  const mtdSales   = APP.txns.filter(t => t.type==='bill' && t.date>=fom).reduce((s,t) => s + +t.amount, 0);
 
   const rows = APP.profiles.filter(p => p.role==='salesman').map(sm => {
-    const pts  = APP.parties.filter(p => p.salesman_id===sm.id);
-    const out  = pts.reduce((s,p) => s + getOutstanding(p.id), 0);
-    const pids = new Set(pts.map(p=>p.id));
-    const mtd  = APP.txns.filter(t => t.type==='payment' && t.date>=fom && pids.has(t.party_id)).reduce((s,t) => s + +t.amount, 0);
-    const uv   = APP.txns.filter(t => t.type==='payment' && !t.verified && pids.has(t.party_id)).length;
-    return { sm, cnt: pts.length, out, mtd, uv };
+    const pts      = APP.parties.filter(p => p.salesman_id===sm.id);
+    const out      = pts.reduce((s,p) => s + getOutstanding(p.id), 0);
+    const pids     = new Set(pts.map(p=>p.id));
+    const fomTxns  = APP.txns.filter(t => t.date>=fom && pids.has(t.party_id));
+    const mtd      = fomTxns.filter(t=>t.type==='payment').reduce((s,t) => s + +t.amount, 0);
+    const mtdBills = fomTxns.filter(t=>t.type==='bill').reduce((s,t) => s + +t.amount, 0);
+    const mtdCN    = fomTxns.filter(t=>t.type==='credit_note').reduce((s,t) => s + +t.amount, 0);
+    const uv       = APP.txns.filter(t => t.type==='payment' && !t.verified && pids.has(t.party_id)).length;
+    return { sm, cnt: pts.length, out, mtd, mtdNet: mtdBills - mtdCN, uv };
   });
 
   return `
   <div class="max-w-5xl mx-auto">
     <h2 class="text-2xl font-bold mb-5">Dashboard</h2>
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
       <div class="bg-white rounded-2xl shadow p-5">
         <p class="text-xs text-gray-400 uppercase mb-1">Total Outstanding</p>
-        <p class="text-3xl font-bold text-blue-700">${rupees(totalOut)}</p>
+        <p class="text-2xl font-bold text-blue-700">${rupees(totalOut)}</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow p-5">
+        <p class="text-xs text-gray-400 uppercase mb-1">MTD Sales</p>
+        <p class="text-2xl font-bold text-indigo-600">${rupees(mtdSales)}</p>
       </div>
       <div class="bg-white rounded-2xl shadow p-5">
         <p class="text-xs text-gray-400 uppercase mb-1">Today's Collections</p>
-        <p class="text-3xl font-bold text-green-600">${rupees(todayColl)}</p>
+        <p class="text-2xl font-bold text-green-600">${rupees(todayColl)}</p>
       </div>
       <div class="bg-white rounded-2xl shadow p-5 cursor-pointer hover:bg-gray-50" onclick="navigate('verify')">
         <p class="text-xs text-gray-400 uppercase mb-1">Pending Verification</p>
-        <p class="text-3xl font-bold ${unv>0?'text-red-500':'text-gray-400'}">${unv}</p>
+        <p class="text-2xl font-bold ${unv>0?'text-red-500':'text-gray-400'}">${unv}</p>
       </div>
     </div>
     <div class="bg-white rounded-2xl shadow overflow-x-auto">
@@ -381,6 +392,7 @@ reg('dashboard', () => {
             <th class="px-4 py-3 text-left">Salesman</th>
             <th class="px-4 py-3 text-right">Parties</th>
             <th class="px-4 py-3 text-right">Outstanding</th>
+            <th class="px-4 py-3 text-right">MTD Net Sales</th>
             <th class="px-4 py-3 text-right">MTD Collection</th>
             <th class="px-4 py-3 text-right">Unverified</th>
           </tr>
@@ -391,6 +403,7 @@ reg('dashboard', () => {
             <td class="px-4 py-3 font-medium">${r.sm.name}</td>
             <td class="px-4 py-3 text-right">${r.cnt}</td>
             <td class="px-4 py-3 text-right font-semibold">${rupees(r.out)}</td>
+            <td class="px-4 py-3 text-right text-indigo-600 font-semibold">${rupees(r.mtdNet)}</td>
             <td class="px-4 py-3 text-right text-green-600">${rupees(r.mtd)}</td>
             <td class="px-4 py-3 text-right ${r.uv>0?'text-red-500 font-bold':''}">${r.uv||'—'}</td>
           </tr>`).join('')}
@@ -615,6 +628,7 @@ reg('partyLedger', ({ partyId }) => {
         <div class="flex gap-2">
           <button onclick="showAddBillModal('${partyId}')" class="text-xs bg-blue-600 text-white px-3 py-1 rounded-lg hover:bg-blue-700">+ Bill</button>
           <button onclick="showRecordPaymentModal('${partyId}')" class="text-xs bg-green-600 text-white px-3 py-1 rounded-lg hover:bg-green-700">+ Payment</button>
+          <button onclick="showAddCreditNoteModal('${partyId}')" class="text-xs bg-orange-500 text-white px-3 py-1 rounded-lg hover:bg-orange-600">+ CN</button>
         </div>
       </div>
       <table class="w-full text-sm">
@@ -636,6 +650,7 @@ reg('partyLedger', ({ partyId }) => {
             <td class="px-4 py-2 text-xs">
               ${r.type==='bill' ? `<span class="text-blue-600">Bill</span>`
               : r.type==='payment' ? `<span class="text-green-600">Payment ${r.verified?'✅':'🕐'}</span>`
+              : r.type==='credit_note' ? `<span class="text-orange-500">Credit Note ✅</span>`
               : `<span class="text-gray-400 italic">Opening</span>`}
             </td>
             <td class="px-4 py-2 text-gray-400 text-xs">${r.ref||'—'}</td>
@@ -1268,8 +1283,8 @@ reg('partyDetail', ({ partyId }) => {
   const ledgerRows = ledger.map(r=>`
     <tr class="border-t ${r.type==='opening'?'bg-blue-50':''}">
       <td class="px-3 py-2 text-xs text-gray-400">${fmtDate(r.date)}</td>
-      <td class="px-3 py-2 text-xs ${r.type==='bill'?'text-blue-600':r.type==='payment'?'text-green-600':'text-gray-400 italic'}">
-        ${r.type==='bill'?'Bill':r.type==='payment'?`Pmt ${r.verified?'✅':'🕐'}`:'Opening'}
+      <td class="px-3 py-2 text-xs ${r.type==='bill'?'text-blue-600':r.type==='payment'?'text-green-600':r.type==='credit_note'?'text-orange-500':'text-gray-400 italic'}">
+        ${r.type==='bill'?'Bill':r.type==='payment'?`Pmt ${r.verified?'✅':'🕐'}`:r.type==='credit_note'?'CN ✅':'Opening'}
       </td>
       <td class="px-3 py-2 text-xs text-gray-400">${r.ref||'—'}</td>
       <td class="px-3 py-2 text-right text-xs">${r.debit?rupees(r.debit):'—'}</td>
@@ -1333,10 +1348,11 @@ reg('partyDetail', ({ partyId }) => {
     <div class="fixed bottom-0 left-0 right-0 bg-white border-t px-4 py-3 flex gap-2 z-20">
       <button onclick="showRecordPaymentModal('${partyId}')"
               class="flex-1 bg-green-600 text-white py-3 rounded-2xl font-semibold text-sm hover:bg-green-700">
-        Record Payment
+        💰 Collect
       </button>
-      ${ME.role==='admin'?`<button onclick="showAddBillModal('${partyId}')" class="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm hover:bg-blue-700">Add Bill</button>`:''}
-      ${ME.role==='admin'?`<button onclick="showEditOpeningModal('${partyId}')" class="bg-gray-200 text-gray-700 px-4 py-3 rounded-2xl font-semibold text-sm hover:bg-gray-300">✏️ Opening</button>`:''}
+      ${ME.role==='admin'?`<button onclick="showAddBillModal('${partyId}')" class="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm hover:bg-blue-700">+ Bill</button>`:''}
+      ${ME.role==='admin'?`<button onclick="showAddCreditNoteModal('${partyId}')" class="bg-orange-500 text-white px-4 py-3 rounded-2xl font-semibold text-sm hover:bg-orange-600">+ CN</button>`:''}
+      ${ME.role==='admin'?`<button onclick="showEditOpeningModal('${partyId}')" class="bg-gray-200 text-gray-700 px-4 py-3 rounded-2xl font-semibold text-sm hover:bg-gray-300">✏️</button>`:''}
     </div>
   </div>`;
 });
@@ -1362,10 +1378,10 @@ function showRecordPaymentModal(partyId) {
       <div><label class="text-xs text-gray-400 block mb-1">Date</label>
         <input type="date" id="pm-date" value="${today()}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       <div><label class="text-xs text-gray-400 block mb-1">Amount Collected (₹) *</label>
-        <input type="number" id="pm-amt" placeholder="0" step="1" oninput="updatePmTotal()"
+        <input type="number" id="pm-amt" placeholder="0" step="1" inputmode="numeric" oninput="updatePmTotal()"
                class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       <div><label class="text-xs text-gray-400 block mb-1">Discount Given (₹)</label>
-        <input type="number" id="pm-disc" placeholder="0" step="1" value="0" oninput="updatePmTotal()"
+        <input type="number" id="pm-disc" placeholder="0" step="1" value="0" inputmode="numeric" oninput="updatePmTotal()"
                class="w-full border rounded-xl px-3 py-2 text-sm bg-yellow-50"></div>
       <div id="pm-total-row" class="hidden bg-green-50 rounded-xl px-3 py-2 text-sm text-green-800 font-semibold">
         Total deduction from outstanding: <span id="pm-total-lbl">₹0</span>
@@ -1457,7 +1473,7 @@ function showAddBillModal(partyId) {
       <div><label class="text-xs text-gray-400 block mb-1">Date</label>
         <input type="date" id="bl-date" value="${today()}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       <div><label class="text-xs text-gray-400 block mb-1">Amount (₹)</label>
-        <input type="number" id="bl-amt" placeholder="0" step="1" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+        <input type="number" id="bl-amt" placeholder="0" step="1" inputmode="numeric" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       <div><label class="text-xs text-gray-400 block mb-1">Bill / Ref No.</label>
         <input type="text" id="bl-ref" placeholder="PBK/0001" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       <div><label class="text-xs text-gray-400 block mb-1">Notes</label>
@@ -1503,7 +1519,7 @@ function showEditOpeningModal(partyId) {
       </div>
       <div>
         <label class="text-xs text-gray-500">New Opening Balance (₹) *</label>
-        <input id="ob-amount" type="number" min="0" step="0.01" value="${cur}"
+        <input id="ob-amount" type="number" min="0" step="0.01" value="${cur}" inputmode="numeric"
                class="w-full border rounded-xl px-3 py-2 text-sm mt-1 focus:outline-none focus:ring-2 focus:ring-blue-300">
       </div>
       <button onclick="saveOpeningBalance('${partyId}')"
@@ -1549,7 +1565,7 @@ function showEditTxnModal(txnId) {
       <div><label class="text-xs text-gray-400 block mb-1">Date</label>
         <input type="date" id="et-date" value="${t.date}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       <div><label class="text-xs text-gray-400 block mb-1">Amount</label>
-        <input type="number" id="et-amt" value="${t.amount}" step="1" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+        <input type="number" id="et-amt" value="${t.amount}" step="1" inputmode="numeric" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
       ${t.type==='payment'?`<div><label class="text-xs text-gray-400 block mb-1">Mode</label>
         <select id="et-mode" class="w-full border rounded-xl px-3 py-2 text-sm">
           ${['cash','cheque','upi','na'].map(m=>`<option ${t.mode===m?'selected':''}>${m}</option>`).join('')}
@@ -1815,6 +1831,146 @@ async function submitEditUser(userId) {
   if (error) { toast(error.message,'error'); return; }
   patchCache('profiles', { id:userId, name, mobile, status });
   closeModal(); toast('Updated'); navigate('users');
+}
+
+// ════════════════════════════════════════════════════════════
+//  VIEW: SALES TRACKER
+// ════════════════════════════════════════════════════════════
+function fmtMonth(ym) {
+  const [y,m] = ym.split('-');
+  const mn = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${mn[parseInt(m)-1]} ${y}`;
+}
+
+reg('sales', () => {
+  const now = new Date();
+  const months = [];
+  let d = new Date(FY_START);
+  while (d <= now) {
+    months.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`);
+    d.setMonth(d.getMonth()+1);
+  }
+  const curMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+
+  return `
+  <div class="max-w-4xl mx-auto">
+    <h2 class="text-2xl font-bold mb-5">Sales Tracker</h2>
+    <div class="flex gap-2 mb-4 flex-wrap">
+      <select id="st-month" onchange="renderSalesTable()"
+              class="border rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+        ${months.map(m=>`<option value="${m}" ${m===curMonth?'selected':''}>${fmtMonth(m)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="bg-white rounded-2xl shadow overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-3 text-left">Salesman</th>
+            <th class="px-4 py-3 text-right">Gross Bills</th>
+            <th class="px-4 py-3 text-right">Credit Notes</th>
+            <th class="px-4 py-3 text-right font-bold text-indigo-600">Net Sales</th>
+          </tr>
+        </thead>
+        <tbody id="sales-tbody"></tbody>
+        <tfoot id="sales-tfoot" class="border-t-2 border-gray-200 bg-gray-50"></tfoot>
+      </table>
+    </div>
+  </div>`;
+});
+
+function renderSalesTable() {
+  const ym = document.getElementById('st-month')?.value || '';
+  if (!ym) return;
+  const [yr, mo] = ym.split('-').map(Number);
+  const from = ym + '-01';
+  const lastDay = new Date(yr, mo, 0).getDate();
+  const to   = ym + '-' + String(lastDay).padStart(2,'0');
+
+  const salesmen = APP.profiles.filter(p=>p.role==='salesman').sort((a,b)=>a.name.localeCompare(b.name));
+  let grandBills = 0, grandCN = 0;
+
+  const rows = salesmen.map(sm => {
+    const pids  = new Set(APP.parties.filter(p=>p.salesman_id===sm.id).map(p=>p.id));
+    const txns  = APP.txns.filter(t => pids.has(t.party_id) && t.date>=from && t.date<=to);
+    const bills = txns.filter(t=>t.type==='bill').reduce((s,t)=>s+(+t.amount),0);
+    const cn    = txns.filter(t=>t.type==='credit_note').reduce((s,t)=>s+(+t.amount),0);
+    grandBills += bills; grandCN += cn;
+    return { sm, bills, cn, net: bills - cn };
+  });
+
+  const tbody = document.getElementById('sales-tbody');
+  const tfoot = document.getElementById('sales-tfoot');
+  if (!tbody) return;
+
+  tbody.innerHTML = rows.length ? rows.map(r=>`
+    <tr class="border-t hover:bg-gray-50">
+      <td class="px-4 py-3 font-medium">${r.sm.name}</td>
+      <td class="px-4 py-3 text-right">${r.bills>0?rupees(r.bills):'—'}</td>
+      <td class="px-4 py-3 text-right ${r.cn>0?'text-orange-600 font-medium':''}">${r.cn>0?rupees(r.cn):'—'}</td>
+      <td class="px-4 py-3 text-right font-bold text-indigo-700">${rupees(r.net)}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="4" class="px-4 py-10 text-center text-gray-400">No data for this month</td></tr>';
+
+  tfoot.innerHTML = `
+    <tr class="font-semibold">
+      <td class="px-4 py-3">Total</td>
+      <td class="px-4 py-3 text-right">${rupees(grandBills)}</td>
+      <td class="px-4 py-3 text-right ${grandCN>0?'text-orange-600':''}">${grandCN>0?rupees(grandCN):'—'}</td>
+      <td class="px-4 py-3 text-right text-indigo-700 text-base">${rupees(grandBills-grandCN)}</td>
+    </tr>`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  MODALS — CREDIT NOTE
+// ════════════════════════════════════════════════════════════
+function showAddCreditNoteModal(partyId) {
+  const party = APP.parties.find(p=>p.id===partyId);
+  const out   = getOutstanding(partyId);
+  showModal(`
+    <h3 class="text-lg font-bold mb-1">Add Credit Note</h3>
+    <p class="text-sm text-gray-500 mb-1">${party?.name}</p>
+    <p class="text-xs text-gray-400 mb-4">Outstanding: <b class="text-gray-700">${rupees(out)}</b></p>
+    <div class="space-y-3">
+      <div><label class="text-xs text-gray-400 block mb-1">Date</label>
+        <input type="date" id="cn-date" value="${today()}" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Amount (₹) *</label>
+        <input type="number" id="cn-amt" placeholder="0" step="1" inputmode="numeric"
+               class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">CN Ref / Reason</label>
+        <input type="text" id="cn-ref" placeholder="CN/001 or reason for credit"
+               class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400 block mb-1">Notes (optional)</label>
+        <input type="text" id="cn-notes" class="w-full border rounded-xl px-3 py-2 text-sm"></div>
+      <div class="bg-orange-50 border border-orange-100 rounded-xl px-3 py-2 text-xs text-orange-700">
+        A credit note reduces the party's outstanding and reduces your net sales for the month.
+      </div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeModal()" class="flex-1 border rounded-2xl py-2.5 text-sm">Cancel</button>
+        <button onclick="submitCreditNote('${partyId}')"
+                class="flex-1 bg-orange-500 text-white rounded-2xl py-2.5 text-sm font-semibold hover:bg-orange-600">
+          Save Credit Note
+        </button>
+      </div>
+    </div>`);
+}
+
+async function submitCreditNote(partyId) {
+  const date   = document.getElementById('cn-date').value;
+  const amount = parseFloat(document.getElementById('cn-amt').value);
+  const ref    = document.getElementById('cn-ref').value.trim() || null;
+  const notes  = document.getElementById('cn-notes').value.trim() || null;
+  if (!date || !amount || amount<=0) { toast('Enter date and amount','error'); return; }
+
+  const party = APP.parties.find(p=>p.id===partyId);
+  const { data, error } = await _sb.from('transactions')
+    .insert({ party_id:partyId, salesman_id:party?.salesman_id||ME.id, date, type:'credit_note',
+              amount, mode:'na', ref, notes, source:'manual', verified:true })
+    .select().single();
+  if (error) { toast(error.message,'error'); return; }
+  patchCache('txns', data, 'insert');
+  closeModal();
+  toast('Credit note saved ✓');
+  navigate(currentView, currentParams);
 }
 
 // ════════════════════════════════════════════════════════════
