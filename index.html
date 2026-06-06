@@ -286,6 +286,7 @@ function renderNav() {
   ] : [
     { n:'smDashboard', l:'Dashboard' },
     { n:'partyList',   l:'My Parties' },
+    { n:'sales',       l:'My Sales' },
   ];
   const unv = isAdmin ? APP.txns.filter(t => t.type==='payment' && !t.verified).length : 0;
 
@@ -1886,7 +1887,9 @@ function renderSalesTable() {
   const lastDay = new Date(yr, mo, 0).getDate();
   const to   = ym + '-' + String(lastDay).padStart(2,'0');
 
-  const salesmen = APP.profiles.filter(p=>p.role==='salesman').sort((a,b)=>a.name.localeCompare(b.name));
+  const salesmen = APP.profiles
+    .filter(p => p.role==='salesman' && (ME.role==='admin' || p.id===ME.id))
+    .sort((a,b)=>a.name.localeCompare(b.name));
   let grandBills = 0, grandCN = 0;
 
   const rows = salesmen.map(sm => {
