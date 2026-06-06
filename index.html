@@ -1887,9 +1887,9 @@ function renderSalesTable() {
   const lastDay = new Date(yr, mo, 0).getDate();
   const to   = ym + '-' + String(lastDay).padStart(2,'0');
 
-  const salesmen = APP.profiles
-    .filter(p => p.role==='salesman' && (ME.role==='admin' || p.id===ME.id))
-    .sort((a,b)=>a.name.localeCompare(b.name));
+  const salesmen = ME.role === 'admin'
+    ? APP.profiles.filter(p=>p.role==='salesman').sort((a,b)=>a.name.localeCompare(b.name))
+    : [ME];
   let grandBills = 0, grandCN = 0;
 
   const rows = salesmen.map(sm => {
