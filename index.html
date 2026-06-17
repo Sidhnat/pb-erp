@@ -1879,8 +1879,7 @@ function sendWhatsAppReminder(smId) {
   ).join('\n');
 
   const msg = `Hi ${sm.name},\n\nFollowing parties have not paid in 15+ days:\n\n${lines}\n\nTotal Overdue: ₹${Math.round(total).toLocaleString('en-IN')}\n\nPlease follow up.\n- Perfect Bathware`;
-  const mobile = '91' + sm.mobile.replace(/\D/g, '').slice(-10);
-  window.open('https://wa.me/' + mobile + '?text=' + encodeURIComponent(msg), '_blank');
+  window.open('https://wa.me?text=' + encodeURIComponent(msg), '_blank');
 }
 
 // ════════════════════════════════════════════════════════════
