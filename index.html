@@ -88,6 +88,8 @@ let APP = { parties: [], txns: [], openings: [], profiles: [] };
 let ME  = null;
 let currentView   = null;
 let currentParams = {};
+let prevView      = null;
+let prevParams    = {};
 
 // ════════════════════════════════════════════════════════════
 //  AUTH
@@ -256,7 +258,14 @@ function modeBadge(mode) {
 const VIEWS = {};
 function reg(name, fn) { VIEWS[name] = fn; }
 
+function goBack(fallback = 'dashboard') {
+  if (prevView) navigate(prevView, prevParams);
+  else navigate(fallback);
+}
+
 function navigate(name, params = {}) {
+  prevView      = currentView;
+  prevParams    = currentParams;
   currentView   = name;
   currentParams = params;
   const fn = VIEWS[name];
@@ -396,6 +405,7 @@ reg('dashboard', () => {
             <th class="px-4 py-3 text-right">MTD Net Sales</th>
             <th class="px-4 py-3 text-right">MTD Collection</th>
             <th class="px-4 py-3 text-right">Unverified</th>
+            <th class="px-4 py-3"></th>
           </tr>
         </thead>
         <tbody>
@@ -407,6 +417,12 @@ reg('dashboard', () => {
             <td class="px-4 py-3 text-right text-indigo-600 font-semibold">${rupees(r.mtdNet)}</td>
             <td class="px-4 py-3 text-right text-green-600">${rupees(r.mtd)}</td>
             <td class="px-4 py-3 text-right ${r.uv>0?'text-red-500 font-bold':''}">${r.uv||'—'}</td>
+            <td class="px-4 py-3">
+              <button onclick="sendWhatsAppReminder('${r.sm.id}')"
+                      class="text-xs bg-green-500 text-white px-2 py-1 rounded-lg hover:bg-green-600 whitespace-nowrap">
+                📱 Remind
+              </button>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -609,7 +625,7 @@ reg('partyLedger', ({ partyId }) => {
   return `
   <div class="max-w-4xl mx-auto">
     <div class="flex items-center gap-2 mb-4 flex-wrap">
-      <button onclick="history.back()" class="text-gray-400 hover:text-gray-600 text-sm">← Back</button>
+      <button onclick="goBack('parties')" class="text-gray-400 hover:text-gray-600 text-sm">← Back</button>
       <h2 class="text-xl font-bold">${party?.name||'Party'}</h2>
       ${sm ? `<span class="text-xs text-gray-400 border rounded px-2 py-0.5">${sm.name}</span>` : ''}
       ${mm ? `<span class="text-yellow-600 text-sm font-medium">⚠️ Mismatch vs 22-May snapshot (calc ${rupees(calcBal)} / snap ${rupees(snapBal)})</span>` : ''}
@@ -686,7 +702,7 @@ reg('parties', () => {
     const daysSince= lastPmt ? Math.floor((new Date()-new Date(lastPmt))/86400000) : 999;
     const unpaid15 = !lastPmt || lastPmt < cutoffStr;
     return { p, sm, out, lastPmt, daysSince, unpaid15 };
-  });
+  }).sort((a, b) => b.out - a.out);
 
   const rowsHtml = rows.map(({p,sm,out,lastPmt,daysSince,unpaid15})=>`
     <tr class="border-t hover:bg-gray-50 prow"
@@ -1832,6 +1848,39 @@ async function submitEditUser(userId) {
   if (error) { toast(error.message,'error'); return; }
   patchCache('profiles', { id:userId, name, mobile, status });
   closeModal(); toast('Updated'); navigate('users');
+}
+
+// ════════════════════════════════════════════════════════════
+//  WHATSAPP REMINDER
+// ════════════════════════════════════════════════════════════
+function sendWhatsAppReminder(smId) {
+  const sm = APP.profiles.find(p => p.id === smId);
+  if (!sm?.mobile) { toast('No mobile number saved for ' + (sm?.name||'salesman'), 'warn'); return; }
+
+  const cutoff    = new Date(); cutoff.setDate(cutoff.getDate() - 15);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  const overdue = APP.parties
+    .filter(p => p.salesman_id === smId)
+    .map(p => {
+      const out    = getOutstanding(p.id);
+      const pmts   = APP.txns.filter(t => t.party_id === p.id && t.type === 'payment');
+      const lastPmt= pmts.length ? pmts.reduce((a,c) => a.date > c.date ? a : c).date : null;
+      return { name: p.name, out, lastPmt };
+    })
+    .filter(x => x.out > 0 && (!x.lastPmt || x.lastPmt < cutoffStr))
+    .sort((a, b) => b.out - a.out);
+
+  if (!overdue.length) { toast('No overdue parties for ' + sm.name, 'warn'); return; }
+
+  const total = overdue.reduce((s, x) => s + x.out, 0);
+  const lines = overdue.map((x, i) =>
+    `${i+1}. ${x.name} — ₹${Math.round(x.out).toLocaleString('en-IN')}`
+  ).join('\n');
+
+  const msg = `Hi ${sm.name},\n\nFollowing parties have not paid in 15+ days:\n\n${lines}\n\nTotal Overdue: ₹${Math.round(total).toLocaleString('en-IN')}\n\nPlease follow up.\n- Perfect Bathware`;
+  const mobile = '91' + sm.mobile.replace(/\D/g, '').slice(-10);
+  window.open('https://wa.me/' + mobile + '?text=' + encodeURIComponent(msg), '_blank');
 }
 
 // ════════════════════════════════════════════════════════════
