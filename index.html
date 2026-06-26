@@ -2100,8 +2100,9 @@ function parseSalesRegisterRows(rows) {
 async function importBillRegister() {
   const p5 = document.getElementById('p5');
   p5.innerHTML = '<p class="text-gray-400">Reading file…</p>';
-  let rows;
-  try { rows = await readXlsx('f5'); } catch(e) { p5.innerHTML = `<p class="text-red-500">${e}</p>`; return; }
+  let wb;
+  try { wb = await readXlsx('f5'); } catch(e) { p5.innerHTML = `<p class="text-red-500">${e}</p>`; return; }
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1, raw:false });
 
   const bills = parseSalesRegisterRows(rows);
   if (!bills.length) { p5.innerHTML = '<p class="text-red-500">No valid bill rows found in file.</p>'; return; }
