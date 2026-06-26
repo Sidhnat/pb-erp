@@ -2056,25 +2056,9 @@ async function submitCreditNote(partyId) {
   navigate(currentView, currentParams);
 }
 
-// ════════════════════════════════════════════════════════════
-//  INIT
-// ════════════════════════════════════════════════════════════
-async function init() {
-  if (SUPABASE_URL === '__SUPABASE_URL__') {
-    document.getElementById('login-screen').innerHTML = `
-      <div class="min-h-screen flex items-center justify-center p-4">
-        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-8 max-w-md text-center">
-          <h1 class="text-xl font-bold mb-3 text-amber-800">⚙️ Setup Required</h1>
-          <p class="text-sm text-gray-600 mb-3">Open <code class="bg-gray-100 px-1 rounded font-mono">index.html</code> in a text editor and replace:</p>
-          <pre class="text-xs bg-gray-100 rounded p-3 text-left mb-3">https://zcmyxledfeexuyqzmsxp.supabase.co/rest/v1/
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbXl4bGVkZmVleHV5cXptc3hwIiwicm9sZSI6ImFub24iLCJpYXQiOj</pre>
-          <p class="text-sm text-gray-500">with your Supabase project credentials.<br>See <code class="bg-gray-100 px-1 rounded">import-guide.md</code> for full setup.</p>
-        </div>
-      </div>`;
-    return;
-  }
-
 // ─── BILL REGISTER IMPORT ────────────────────────────────────────────────────
+function normName(s) { return s.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim(); }
+
 function parseSalesRegisterRows(rows) {
   const skipNames = new Set(['cash in hand', 'damage goods']);
   const bills = [];
@@ -2108,8 +2092,9 @@ async function importBillRegister() {
   if (!bills.length) { p5.innerHTML = '<p class="text-red-500">No valid bill rows found in file.</p>'; return; }
 
   const existingRefs = new Set(APP.txns.filter(t=>t.type==='bill'&&t.ref).map(t=>t.ref.trim()));
+  // Build normalised party map (strips punctuation so "PVT. LTD." matches "PVT LTD")
   const partyMap = {};
-  APP.parties.forEach(p => { partyMap[p.name.trim().toLowerCase()] = p; });
+  APP.parties.forEach(p => { partyMap[normName(p.name)] = p; });
 
   const toInsert   = [];
   const duplicates = [];
@@ -2117,7 +2102,7 @@ async function importBillRegister() {
 
   for (const b of bills) {
     if (existingRefs.has(b.ref)) { duplicates.push(b); continue; }
-    const party = partyMap[b.partyName.toLowerCase()];
+    const party = partyMap[normName(b.partyName)];
     if (party) {
       toInsert.push({ ...b, party_id: party.id });
     } else {
@@ -2163,17 +2148,19 @@ async function importBillRegister() {
       ${(toInsert.length + unmatchedNames.length) > 0 ? `
       <button onclick="confirmBillRegister()" class="w-full bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-indigo-700">
         Confirm Import (${toInsert.length} matched + ${unmatchedNames.length} new party bills)
-      </button>` : '<p class="text-gray-400 text-xs">Nothing new to import.</p>'}
+      </button>` : '<p class="text-gray-400 text-xs">Nothing new to import — all already in DB.</p>'}
     </div>`;
 }
 
 async function confirmBillRegister() {
   const p5 = document.getElementById('p5');
+  if (!window._billImport) { toast('Please click Preview & Import first', 'warn'); return; }
   const { toInsert, unmatched } = window._billImport;
   const unmatchedNames = [...unmatched.keys()];
 
   p5.innerHTML = '<p class="text-gray-400">Importing…</p>';
   let totalInserted = 0;
+  let newPartyCount = 0;
 
   try {
     const allBills = [...toInsert];
@@ -2181,11 +2168,12 @@ async function confirmBillRegister() {
     for (const name of unmatchedNames) {
       const key = name.replace(/[^a-z0-9]/gi,'_');
       const smId = document.getElementById('ns-' + key)?.value || null;
-      if (!smId) continue; // skip if no salesman assigned
+      if (!smId) continue;
 
       const { data: newParty, error: pe } = await _sb.from('parties').insert([{ name, salesman_id: smId }]).select().single();
       if (pe) throw pe;
       APP.parties.push(newParty);
+      newPartyCount++;
       for (const b of unmatched.get(name)) allBills.push({ ...b, party_id: newParty.id });
     }
 
@@ -2200,11 +2188,6 @@ async function confirmBillRegister() {
       totalInserted += data.length;
     }
 
-    const newPartyCount = unmatchedNames.filter(name => {
-      const k = name.replace(/[^a-z0-9]/gi,'_');
-      return document.getElementById('ns-'+k)?.value;
-    }).length;
-
     window._billImport = null;
     p5.innerHTML = `<div class="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
       <p class="text-green-700 font-bold text-lg">Import Complete</p>
@@ -2216,6 +2199,24 @@ async function confirmBillRegister() {
     toast('Import failed: ' + (e.message||e), 'error');
   }
 }
+
+// ════════════════════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════════════════════
+async function init() {
+  if (SUPABASE_URL === '__SUPABASE_URL__') {
+    document.getElementById('login-screen').innerHTML = `
+      <div class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-8 max-w-md text-center">
+          <h1 class="text-xl font-bold mb-3 text-amber-800">⚙️ Setup Required</h1>
+          <p class="text-sm text-gray-600 mb-3">Open <code class="bg-gray-100 px-1 rounded font-mono">index.html</code> in a text editor and replace:</p>
+          <pre class="text-xs bg-gray-100 rounded p-3 text-left mb-3">https://zcmyxledfeexuyqzmsxp.supabase.co/rest/v1/
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjbXl4bGVkZmVleHV5cXptc3hwIiwicm9sZSI6ImFub24iLCJpYXQiOj</pre>
+          <p class="text-sm text-gray-500">with your Supabase project credentials.<br>See <code class="bg-gray-100 px-1 rounded">import-guide.md</code> for full setup.</p>
+        </div>
+      </div>`;
+    return;
+  }
 
   initAdminSb();
   const { data: { session } } = await _sb.auth.getSession();
