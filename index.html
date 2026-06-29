@@ -717,7 +717,7 @@ reg('parties', () => {
           onclick="navigate('partyLedger',{partyId:'${p.id}'})">${p.name}</td>
       <td class="px-4 py-3 text-right font-semibold ${out>0?'text-gray-900':'text-gray-300'}">${rupees(out)}</td>
       <td class="px-4 py-3 text-sm ${unpaid15?'text-red-500 font-semibold':'text-gray-500'}">
-        ${lastPmt ? fmtDate(lastPmt)+` <span class="text-xs">(${daysSince}d ago)</span>` : '<span class="text-red-400">Never</span>'}
+        ${lastPmt ? fmtDate(lastPmt)+` <span class="text-xs">(${daysSince}d ago)</span>` : `<span class="${unpaid15?'text-red-400':'text-gray-400'}">Never paid</span>`}
       </td>
       <td class="px-4 py-3 text-gray-500 text-sm">${sm?.name||'—'}</td>
       <td class="px-4 py-3"><button onclick="showEditPartyModal('${p.id}')" class="text-xs text-blue-500 hover:underline">Edit</button></td>
