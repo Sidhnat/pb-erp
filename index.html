@@ -697,10 +697,13 @@ reg('parties', () => {
   const rows = APP.parties.map(p => {
     const sm       = APP.profiles.find(pr=>pr.id===p.salesman_id);
     const out      = getOutstanding(p.id);
-    const pmts     = APP.txns.filter(t=>t.party_id===p.id&&t.type==='payment');
-    const lastPmt  = pmts.length ? pmts.reduce((a,c)=>a.date>c.date?a:c).date : null;
-    const daysSince= lastPmt ? Math.floor((new Date()-new Date(lastPmt))/86400000) : 999;
-    const unpaid15 = !lastPmt || lastPmt < cutoffStr;
+    const pmts        = APP.txns.filter(t=>t.party_id===p.id&&t.type==='payment');
+    const bills       = APP.txns.filter(t=>t.party_id===p.id&&t.type==='bill');
+    const lastPmt     = pmts.length  ? pmts.reduce((a,c)=>a.date>c.date?a:c).date  : null;
+    const lastBill    = bills.length ? bills.reduce((a,c)=>a.date>c.date?a:c).date : null;
+    const lastActivity= [lastPmt, lastBill].filter(Boolean).sort().pop() || null;
+    const daysSince   = lastPmt ? Math.floor((new Date()-new Date(lastPmt))/86400000) : 999;
+    const unpaid15    = out > 0 && (!lastActivity || lastActivity < cutoffStr);
     return { p, sm, out, lastPmt, daysSince, unpaid15 };
   }).sort((a, b) => b.out - a.out);
 
@@ -1896,11 +1899,14 @@ function sendWhatsAppReminder(smId) {
     .filter(p => p.salesman_id === smId)
     .map(p => {
       const out    = getOutstanding(p.id);
-      const pmts   = APP.txns.filter(t => t.party_id === p.id && t.type === 'payment');
-      const lastPmt= pmts.length ? pmts.reduce((a,c) => a.date > c.date ? a : c).date : null;
-      return { name: p.name, out, lastPmt };
+      const pmts        = APP.txns.filter(t => t.party_id === p.id && t.type === 'payment');
+      const bills       = APP.txns.filter(t => t.party_id === p.id && t.type === 'bill');
+      const lastPmt     = pmts.length  ? pmts.reduce((a,c)  => a.date > c.date ? a : c).date : null;
+      const lastBill    = bills.length ? bills.reduce((a,c) => a.date > c.date ? a : c).date : null;
+      const lastActivity= [lastPmt, lastBill].filter(Boolean).sort().pop() || null;
+      return { name: p.name, out, lastActivity };
     })
-    .filter(x => x.out > 0 && (!x.lastPmt || x.lastPmt < cutoffStr))
+    .filter(x => x.out > 0 && (!x.lastActivity || x.lastActivity < cutoffStr))
     .sort((a, b) => b.out - a.out);
 
   if (!overdue.length) { toast('No overdue parties for ' + sm.name, 'warn'); return; }
