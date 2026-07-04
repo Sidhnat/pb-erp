@@ -2164,6 +2164,13 @@ async function confirmBillRegister() {
   const { toInsert, unmatched } = window._billImport;
   const unmatchedNames = [...unmatched.keys()];
 
+  // Read ALL dropdown values BEFORE clearing the UI (clearing destroys the elements)
+  const smSelections = {};
+  for (const name of unmatchedNames) {
+    const key = name.replace(/[^a-z0-9]/gi,'_');
+    smSelections[name] = document.getElementById('ns-' + key)?.value || null;
+  }
+
   p5.innerHTML = '<p class="text-gray-400">Importing…</p>';
   let totalInserted = 0;
   let newPartyCount = 0;
@@ -2172,8 +2179,7 @@ async function confirmBillRegister() {
     const allBills = [...toInsert];
 
     for (const name of unmatchedNames) {
-      const key = name.replace(/[^a-z0-9]/gi,'_');
-      const smId = document.getElementById('ns-' + key)?.value || null;
+      const smId = smSelections[name];
       if (!smId) continue;
 
       const { data: newParty, error: pe } = await _sb.from('parties').insert([{ name, salesman_id: smId }]).select().single();
