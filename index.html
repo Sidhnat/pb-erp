@@ -135,17 +135,30 @@ function setLoginError(msg) {
 // ════════════════════════════════════════════════════════════
 //  DATA
 // ════════════════════════════════════════════════════════════
+async function fetchAllTxns() {
+  const all = []; const PAGE = 1000; let from = 0;
+  while (true) {
+    const { data, error } = await _sb.from('transactions')
+      .select('*').gte('date', FY_START).order('date').range(from, from + PAGE - 1);
+    if (error || !data?.length) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
 async function loadAppData() {
   const baseQ = [
     _sb.from('parties').select('*').order('name'),
-    _sb.from('transactions').select('*').gte('date', FY_START).order('date').limit(10000),
+    fetchAllTxns(),
     _sb.from('opening_balances').select('*'),
   ];
   if (ME.role === 'admin') baseQ.push(_sb.from('profiles').select('*').order('name'));
 
-  const [pRes, tRes, oRes, prRes] = await Promise.all(baseQ);
+  const [pRes, txns, oRes, prRes] = await Promise.all(baseQ);
   APP.parties  = pRes.data  || [];
-  APP.txns     = tRes.data  || [];
+  APP.txns     = txns       || [];
   APP.openings = oRes.data  || [];
   APP.profiles = prRes?.data || [];
 }
@@ -1125,10 +1138,10 @@ async function confirmLedgers() {
 
   const [pR,tR,oR] = await Promise.all([
     _sb.from('parties').select('*').order('name'),
-    _sb.from('transactions').select('*').gte('date',FY_START).order('date').limit(10000),
+    fetchAllTxns(),
     _sb.from('opening_balances').select('*'),
   ]);
-  APP.parties=pR.data||[]; APP.txns=tR.data||[]; APP.openings=oR.data||[];
+  APP.parties=pR.data||[]; APP.txns=tR||[]; APP.openings=oR.data||[];
 
   p.innerHTML = `<span class="text-green-600 font-medium">✓ ${obB.length} opening balances · ${txnB.length} transactions imported.</span>
     ${unm.length?`<br><span class="text-yellow-600">⚠️ ${unm.length} unmatched: ${unm.slice(0,5).join(', ')}${unm.length>5?'…':''} (run Step 1 first)</span>`:''}`;
