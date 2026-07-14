@@ -138,7 +138,7 @@ function setLoginError(msg) {
 async function loadAppData() {
   const baseQ = [
     _sb.from('parties').select('*').order('name'),
-    _sb.from('transactions').select('*').gte('date', FY_START).order('date'),
+    _sb.from('transactions').select('*').gte('date', FY_START).order('date').limit(10000),
     _sb.from('opening_balances').select('*'),
   ];
   if (ME.role === 'admin') baseQ.push(_sb.from('profiles').select('*').order('name'));
@@ -1125,7 +1125,7 @@ async function confirmLedgers() {
 
   const [pR,tR,oR] = await Promise.all([
     _sb.from('parties').select('*').order('name'),
-    _sb.from('transactions').select('*').gte('date',FY_START).order('date'),
+    _sb.from('transactions').select('*').gte('date',FY_START).order('date').limit(10000),
     _sb.from('opening_balances').select('*'),
   ]);
   APP.parties=pR.data||[]; APP.txns=tR.data||[]; APP.openings=oR.data||[];
