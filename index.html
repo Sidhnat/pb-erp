@@ -1482,6 +1482,7 @@ async function submitPayment(partyId) {
   const ref    = document.getElementById('pm-ref')?.value.trim() || null;
   const notes  = document.getElementById('pm-notes').value.trim() || null;
   if (!date) { toast('Enter a date','error'); return; }
+  if (parseInt(date.split('-')[0]) < 2020) { toast('Date year looks wrong — check it','error'); return; }
   if (amount<=0 && disc<=0) { toast('Enter amount or discount','error'); return; }
 
   const party   = APP.parties.find(p=>p.id===partyId);
@@ -1544,6 +1545,7 @@ async function submitBill(partyId) {
   const ref    = document.getElementById('bl-ref').value.trim() || null;
   const notes  = document.getElementById('bl-notes').value.trim() || null;
   if (!pid||!date||!amount||amount<=0) { toast('Fill required fields','error'); return; }
+  if (parseInt(date.split('-')[0]) < 2020) { toast('Date year looks wrong — check it','error'); return; }
   const party  = APP.parties.find(p=>p.id===pid);
   const { data, error } = await _sb.from('transactions')
     .insert({ party_id:pid, salesman_id:party?.salesman_id||ME.id, date, type:'bill', amount, mode:'na', ref, notes, source:'manual' })
@@ -2049,6 +2051,7 @@ async function submitCreditNote(partyId) {
   const ref    = document.getElementById('cn-ref').value.trim() || null;
   const notes  = document.getElementById('cn-notes').value.trim() || null;
   if (!date || !amount || amount<=0) { toast('Enter date and amount','error'); return; }
+  if (parseInt(date.split('-')[0]) < 2020) { toast('Date year looks wrong — check it','error'); return; }
 
   const party = APP.parties.find(p=>p.id===partyId);
   const { data, error } = await _sb.from('transactions')
